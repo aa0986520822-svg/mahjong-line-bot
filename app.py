@@ -69,9 +69,17 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
-    if text == "配桌":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🎯 配桌功能建置中"))
-        return
+    def table_menu():
+    buttons = [
+        QuickReplyButton(action=MessageAction(label="✅ 配桌", text="配桌_配桌")),
+        QuickReplyButton(action=MessageAction(label="👥 人數", text="配桌_人數")),
+        QuickReplyButton(action=MessageAction(label="📍 地點", text="配桌_地點")),
+        QuickReplyButton(action=MessageAction(label="⏳ 等待通知", text="配桌_等待")),
+        QuickReplyButton(action=MessageAction(label="📣 成桌通知", text="配桌_完成")),
+        QuickReplyButton(action=MessageAction(label="🔙 返回主選單", text="選單")),
+    ]
+    return TextSendMessage("🎯 配桌設定：", quick_reply=QuickReply(items=buttons))
+
 
     if text == "麻將計算機":
         user_state[user_id] = "mahjong"
@@ -158,5 +166,6 @@ import os
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
