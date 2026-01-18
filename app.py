@@ -38,6 +38,7 @@ def match_menu():
     buttons = [
         QuickReplyButton(action=MessageAction(label="🪑 點桌加入", text="點桌加入")),
         QuickReplyButton(action=MessageAction(label="👀 查看目前配桌", text="查看目前配桌")),
+        QuickReplyButton(action=MessageAction(label="❌ 退出配桌", text="退出配桌")),
         QuickReplyButton(action=MessageAction(label="🔙 返回", text="選單")),
     ]
     return TextSendMessage("🎯 配桌功能：", quick_reply=QuickReply(items=buttons))
@@ -48,6 +49,7 @@ def people_menu():
         QuickReplyButton(action=MessageAction(label="👤 我1人", text="我1人")),
         QuickReplyButton(action=MessageAction(label="👥 我2人", text="我2人")),
         QuickReplyButton(action=MessageAction(label="👥 我3人", text="我3人")),
+        QuickReplyButton(action=MessageAction(label="❌ 退出配桌", text="退出配桌")),
         QuickReplyButton(action=MessageAction(label="🔙 返回", text="配桌")),
     ]
     return TextSendMessage("請選擇加入人數：", quick_reply=QuickReply(items=buttons))
@@ -90,10 +92,22 @@ def handle_message(event):
     if user_id not in ledger:
         ledger[user_id] = []
 
+    # ====== 退出配桌 ======
+    if text == "退出配桌":
+        user_state[user_id] = None
+        line_bot_api.reply_message(event.reply_token, [
+            TextSendMessage("✅ 已退出配桌"),
+            main_menu()
+        ])
+        return
+
+    # ====== 主選單 ======
     if text in ["選單", "menu"]:
+        user_state[user_id] = None
         line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
+    # ====== 配桌 ======
     if text == "配桌":
         line_bot_api.reply_message(event.reply_token, match_menu())
         return
@@ -116,12 +130,13 @@ def handle_message(event):
             return
 
         table_count += add
-        tables.append(user_id)
+        for _ in range(add):
+            tables.append(user_id)
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(f"✅ 已加入 {add} 人\n目前人數：{table_count}/4\n等待成桌")
-        )
+        line_bot_api.reply_message(event.reply_token, [
+            TextSendMessage(f"✅ 已加入 {add} 人\n目前人數：{table_count}/4\n等待成桌"),
+            match_menu()
+        ])
 
         user_state[user_id] = None
 
@@ -140,10 +155,10 @@ def handle_message(event):
         return
 
     if text == "查看目前配桌":
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(f"👀 目前等待人數：{table_count}/4")
-        )
+        line_bot_api.reply_message(event.reply_token, [
+            TextSendMessage(f"👀 目前等待人數：{table_count}/4"),
+            match_menu()
+        ])
         return
 
     if user_state.get(user_id) == "confirm_join":
@@ -157,11 +172,13 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入：加入 或 放棄"))
         return
 
+    # ====== 麻將 ======
     if text == "麻將計算機":
         user_state[user_id] = "mahjong"
         line_bot_api.reply_message(event.reply_token, TextSendMessage("📸 請上傳麻將照片"))
         return
 
+    # ====== 記事本 ======
     if text == "輸贏記事本":
         line_bot_api.reply_message(event.reply_token, ledger_menu())
         return
