@@ -17,13 +17,12 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 ledger = {}
 user_state = {}
 
-# ===== 配桌資料 =====
 tables = {}
 current_table_users = {}
 current_people = 0
 table_serial = 1
 
-GROUP_LINK = "https://line.me/R/ti/g/XXXXXXXX"  # 換成你的群組連結
+GROUP_LINK = "https://line.me/R/ti/g/XXXXXXXX"
 
 
 # ================= MENU =================
@@ -42,6 +41,7 @@ def match_menu():
         QuickReplyButton(action=MessageAction(label="🪑 點桌加入", text="點桌加入")),
         QuickReplyButton(action=MessageAction(label="👀 查看目前配桌", text="查看目前配桌")),
         QuickReplyButton(action=MessageAction(label="❌ 退出配桌", text="退出配桌")),
+        QuickReplyButton(action=MessageAction(label="🔙 返回主選單", text="選單")),
     ]
     return TextSendMessage("🎯 配桌功能：", quick_reply=QuickReply(items=buttons))
 
@@ -54,6 +54,22 @@ def people_menu():
         QuickReplyButton(action=MessageAction(label="❌ 退出配桌", text="退出配桌")),
     ]
     return TextSendMessage("請選擇加入人數：", quick_reply=QuickReply(items=buttons))
+
+
+def after_join_menu():
+    buttons = [
+        QuickReplyButton(action=MessageAction(label="👀 查看目前配桌", text="查看目前配桌")),
+        QuickReplyButton(action=MessageAction(label="❌ 退出配桌", text="退出配桌")),
+        QuickReplyButton(action=MessageAction(label="🔙 返回主選單", text="選單")),
+    ]
+    return QuickReply(items=buttons)
+
+
+def view_only_menu():
+    buttons = [
+        QuickReplyButton(action=MessageAction(label="🔙 返回主選單", text="選單")),
+    ]
+    return QuickReply(items=buttons)
 
 
 def confirm_menu():
@@ -108,21 +124,21 @@ def handle_message(event):
     if user_id not in ledger:
         ledger[user_id] = []
 
-    # ====== 主選單 ======
     if text in ["選單", "menu"]:
         user_state[user_id] = None
         line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
-    # ====== 配桌 ======
     if text == "配桌":
         line_bot_api.reply_message(event.reply_token, match_menu())
         return
 
     if text == "退出配桌":
+        if user_id in current_table_users:
+            current_people -= current_table_users[user_id]
+            current_table_users.pop(user_id)
         user_state[user_id] = None
-        current_table_users.pop(user_id, None)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已退出配桌"))
+        line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
     if text == "點桌加入":
@@ -133,7 +149,8 @@ def handle_message(event):
     if user_state.get(user_id) == "choose_people":
 
         if user_id in current_table_users:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("⚠️ 你已加入配桌"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(
+                "⚠️ 你已加入配桌", quick_reply=after_join_menu()))
             return
 
         if text == "我1人":
@@ -149,7 +166,8 @@ def handle_message(event):
         current_people += add
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            f"✅ 已加入 {add} 人\n目前人數：{current_people}/4"
+            f"✅ 已加入 {add} 人\n目前人數：{current_people}/4",
+            quick_reply=after_join_menu()
         ))
 
         user_state[user_id] = None
@@ -174,7 +192,8 @@ def handle_message(event):
 
     if text == "查看目前配桌":
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            f"👀 目前等待人數：{current_people}/4"
+            f"👀 目前等待人數：{current_people}/4",
+            quick_reply=view_only_menu()
         ))
         return
 
@@ -182,13 +201,12 @@ def handle_message(event):
 
         if text == "確認加入":
             user_state[user_id] = None
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入"))
+            line_bot_api.reply_message(event.reply_token, main_menu())
         elif text == "確認放棄":
             user_state[user_id] = None
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄此桌"))
+            line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
-    # ====== 麻將 ======
     if text == "麻將計算機":
         user_state[user_id] = "mahjong"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
@@ -196,7 +214,6 @@ def handle_message(event):
         ))
         return
 
-    # ====== 記事本 ======
     if text == "輸贏記事本":
         line_bot_api.reply_message(event.reply_token, ledger_menu())
         return
@@ -246,8 +263,6 @@ def handle_message(event):
     line_bot_api.reply_message(event.reply_token, main_menu())
 
 
-# ================= IMAGE =================
-
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
@@ -259,8 +274,6 @@ def handle_image(event):
         ))
         user_state[user_id] = None
 
-
-# ================= RUN =================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
