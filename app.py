@@ -1,11 +1,11 @@
 import os
+import json
+from datetime import datetime, timedelta
 from flask import Flask, request, abort
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import *
-
-from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -15,27 +15,31 @@ LINE_CHANNEL_SECRET = os.getenv("21ed83b842e88ced83a9f551a595390d")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-user_state = {}
 ledger = {}
+user_state = {}
 
-# ------------------- MENU -------------------
+# ================= MENU =================
 
 def main_menu():
-    return TemplateSendMessage(
-        alt_text="主選單",
-        template=ButtonsTemplate(
-            title="🀄 麻將 AI 助手",
-            text="請選擇功能",
-            actions=[
-                MessageAction(label="🎯 配桌", text="配桌"),
-                MessageAction(label="📸 麻將計算機", text="麻將計算機"),
-                MessageAction(label="📒 輸贏記事本", text="輸贏記事本"),
-                MessageAction(label="📊 本月結算", text="本月結算"),
-            ]
-        )
-    )
+    buttons = [
+        QuickReplyButton(action=MessageAction(label="🎯 配桌", text="配桌")),
+        QuickReplyButton(action=MessageAction(label="📸 麻將計算機", text="麻將計算機")),
+        QuickReplyButton(action=MessageAction(label="📒 輸贏記事本", text="輸贏記事本")),
+    ]
+    return TextSendMessage("請選擇功能：", quick_reply=QuickReply(items=buttons))
 
-# ------------------- CALLBACK -------------------
+
+def ledger_menu():
+    buttons = [
+        QuickReplyButton(action=MessageAction(label="➕ 新增紀錄", text="新增紀錄")),
+        QuickReplyButton(action=MessageAction(label="📊 本月結算", text="本月結算")),
+        QuickReplyButton(action=MessageAction(label="📊 上月結算", text="上月結算")),
+        QuickReplyButton(action=MessageAction(label="🔙 返回主選單", text="選單")),
+    ]
+    return TextSendMessage("📒 輸贏記事本：", quick_reply=QuickReply(items=buttons))
+
+
+# ================= WEBHOOK =================
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -49,61 +53,106 @@ def callback():
 
     return "OK"
 
-# ------------------- TEXT -------------------
+
+# ================= MESSAGE =================
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    text = event.message.text.strip()
     user_id = event.source.user_id
+    text = event.message.text.strip()
 
+    if user_id not in ledger:
+        ledger[user_id] = []
+
+    # ----- main -----
     if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu())
         return
 
-    if text == "麻將計算機":
-        user_state[user_id] = "mahjong_ai"
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="📸 請拍照上傳你的手牌，我幫你算聽什麼牌")
-        )
+    if text == "配桌":
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("🎯 配桌功能建置中"))
         return
 
-    if text == "配桌":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="🎯 配桌功能尚未擴充"))
+    if text == "麻將計算機":
+        user_state[user_id] = "mahjong"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("📸 請上傳麻將照片"))
         return
 
     if text == "輸贏記事本":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📒 記帳功能尚未擴充"))
+        line_bot_api.reply_message(event.reply_token, ledger_menu())
+        return
+
+    # ----- ledger -----
+    if text == "新增紀錄":
+        user_state[user_id] = "add_money"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入金額 (贏=正數 / 輸=-數字)"))
         return
 
     if text == "本月結算":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="📊 本月結算尚未擴充"))
+        now = datetime.now()
+        total = 0
+        for row in ledger[user_id]:
+            d = datetime.strptime(row["date"], "%Y-%m-%d")
+            if d.year == now.year and d.month == now.month:
+                total += row["amount"]
+
+        line_bot_api.reply_message(event.reply_token, [
+            TextSendMessage(f"📊 本月結算：{total}"),
+            ledger_menu()
+        ])
+        return
+
+    if text == "上月結算":
+        now = datetime.now()
+        last = now.replace(day=1) - timedelta(days=1)
+        total = 0
+
+        for row in ledger[user_id]:
+            d = datetime.strptime(row["date"], "%Y-%m-%d")
+            if d.year == last.year and d.month == last.month:
+                total += row["amount"]
+
+        line_bot_api.reply_message(event.reply_token, [
+            TextSendMessage(f"📊 上月結算：{total}"),
+            ledger_menu()
+        ])
+        return
+
+    # ----- input money -----
+    if user_state.get(user_id) == "add_money":
+        try:
+            amt = int(text)
+            ledger[user_id].append({
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "amount": amt
+            })
+            user_state[user_id] = None
+
+            line_bot_api.reply_message(event.reply_token, [
+                TextSendMessage(f"✅ 已紀錄：{amt}"),
+                ledger_menu()
+            ])
+        except:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入數字，例如：100 或 -50"))
         return
 
     line_bot_api.reply_message(event.reply_token, main_menu())
 
 
-# ------------------- IMAGE -------------------
+# ================= IMAGE =================
 
 @handler.add(MessageEvent, message=ImageMessage)
 def handle_image(event):
     user_id = event.source.user_id
 
-    if user_state.get(user_id) != "mahjong_ai":
+    if user_state.get(user_id) == "mahjong":
+        reply = TextSendMessage("🀄 辨識完成：\n目前示範 → 聽：三萬、六筒")
+        line_bot_api.reply_message(event.reply_token, reply)
+        user_state[user_id] = None
         return
 
-    # 之後這裡可以接 AI 辨識
-    result = "🀄 分析完成\n\n➡ 聽牌：\n3萬、6萬、白板"
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(text=result)
-    )
-
-    user_state[user_id] = None
-
-
-# ------------------- RUN -------------------
+# ================= RUN =================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
