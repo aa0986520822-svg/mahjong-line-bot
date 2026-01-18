@@ -23,6 +23,7 @@ user_state = {}
 def get_db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
     return g.db
 
 @app.teardown_appcontext
@@ -37,6 +38,11 @@ def init_db():
         user_id TEXT,
         price TEXT,
         people INT
+    )""")
+    db.execute("""CREATE TABLE IF NOT EXISTS match_confirm(
+        user_id TEXT,
+        price TEXT,
+        ok INT
     )""")
     db.execute("""CREATE TABLE IF NOT EXISTS ledger(
         user_id TEXT,
@@ -139,21 +145,56 @@ def handle_message(event):
             cur = db.execute("SELECT user_id FROM match_users WHERE price=?", (price,))
             users = cur.fetchall()
 
-            for u, in users:
-                line_bot_api.push_message(u,
-                    TextSendMessage(f"🎉 成桌成功\n點此加入群組👇\n{GROUP_LINK}")
+            for u in users:
+                line_bot_api.push_message(u["user_id"],
+                    TextSendMessage(
+                        f"🎉 成桌成功 ({price})\n\n請確認是否加入",
+                        quick_reply=QuickReply(items=[
+                            QuickReplyButton(action=MessageAction(label="✅ 加入", text=f"加入_{price}")),
+                            QuickReplyButton(action=MessageAction(label="❌ 放棄", text=f"放棄_{price}")),
+                        ])
+                    )
+                )
+
+            # 通知營業中店家
+            shops = db.execute("SELECT shop_id FROM shops WHERE open=1").fetchall()
+            for s in shops:
+                line_bot_api.push_message(
+                    s["shop_id"],
+                    TextSendMessage(f"📣 新一桌成立 ({price})\n請加入群協助玩家\n{GROUP_LINK}")
                 )
 
             db.execute("DELETE FROM match_users WHERE price=?", (price,))
             db.commit()
+
+        return
+
+    if text.startswith("加入_"):
+        price = text.split("_")[1]
+        db.execute("INSERT INTO match_confirm VALUES(?,?,1)", (user_id,price))
+        db.commit()
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage(f"✅ 已確認加入\n\n點擊加入群組👇\n{GROUP_LINK}", quick_reply=back_menu()))
+        return
+
+    if text.startswith("放棄_"):
+        price = text.split("_")[1]
+        db.execute("INSERT INTO match_confirm VALUES(?,?,0)", (user_id,price))
+        db.commit()
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("❌ 已放棄本次配桌", quick_reply=back_menu()))
         return
 
     if text == "查看目前配桌":
-        cur = db.execute("SELECT price,SUM(people) FROM match_users GROUP BY price")
+        cur = db.execute("SELECT price,SUM(people) total FROM match_users GROUP BY price")
         rows = cur.fetchall()
         msg = "📋 配桌狀態\n\n"
-        for p,t in rows:
-            msg += f"{p}：{t}/4\n"
+        for r in rows:
+            msg += f"{r['price']}：{r['total']}/4\n"
+        if not rows:
+            msg += "目前尚無配桌"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
         return
 
@@ -169,8 +210,8 @@ def handle_message(event):
         cur = db.execute("SELECT name FROM shops WHERE open=1")
         shops = cur.fetchall()
         msg = "🏪 營業中店家\n\n"
-        for s, in shops:
-            msg += f"✅ {s}\n"
+        for s in shops:
+            msg += f"✅ {s['name']}\n"
         if not shops:
             msg += "目前沒有營業店家"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
@@ -187,10 +228,10 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入麻將館名稱"))
             return
 
-        status = "營業中" if shop[2] else "休息中"
+        status = "營業中" if shop["open"] else "休息中"
 
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage(f"🏪 {shop[1]}\n目前狀態：{status}", quick_reply=QuickReply(items=[
+            TextSendMessage(f"🏪 {shop['name']}\n目前狀態：{status}", quick_reply=QuickReply(items=[
                 QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
                 QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
