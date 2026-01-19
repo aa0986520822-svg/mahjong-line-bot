@@ -67,7 +67,7 @@ def main_menu(user_id=None):
     items = [
         QuickReplyButton(action=MessageAction(label="🎯 配桌", text="配桌")),
         QuickReplyButton(action=MessageAction(label="🏪 店家配桌", text="店家配桌")),
-        QuickReplyButton(action=MessageAction(label="📒 輸贏記事本", text="輸贏記事本")),
+        QuickReplyButton(action=MessageAction(label="📒 輸贏記事本", text="記事本")),
         QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")),
     ]
     if user_id in ADMIN_IDS:
@@ -322,7 +322,7 @@ def handle_message(event):
 
     # ================= 記事本 =================
 
-    if text == "輸贏記事本":
+    if text == "記事本":
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("📒 輸贏記事本", quick_reply=QuickReply(items=[
                 QuickReplyButton(action=MessageAction(label="➕ 新增紀錄", text="新增紀錄")),
@@ -369,3 +369,4 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
