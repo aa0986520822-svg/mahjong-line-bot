@@ -87,8 +87,16 @@ def handle_message(event):
     init_db()
     db = get_db()
     user_id = event.source.user_id
+    
+# ===== 查詢自己的 LINE ID =====
+    
     text = event.message.text.strip()
-
+    if text in ["我的ID", "id", "ID"]:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(f"🆔 你的 LINE UserID 是：\n{user_id}")
+        )
+        return
     if text in ["選單","menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu())
         return
@@ -202,3 +210,4 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
