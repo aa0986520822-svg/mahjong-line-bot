@@ -1,5 +1,5 @@
 import os, sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, abort, g
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -65,9 +65,9 @@ def init_db():
 
 def main_menu(user_id=None):
     items = [
-        QuickReplyButton(action=MessageAction(label="🎯 配桌", text="配桌")),
-        QuickReplyButton(action=MessageAction(label="🏪 店家配桌", text="店家配桌")),
-        QuickReplyButton(action=MessageAction(label="📒 輸贏記事本", text="記事本")),
+        QuickReplyButton(action=MessageAction(label="🎯🎯 配桌", text="配桌")),
+        QuickReplyButton(action=MessageAction(label="🏪🏪 店家配桌", text="店家配桌")),
+        QuickReplyButton(action=MessageAction(label="📒📒 記事本", text="記事本")),
         QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")),
     ]
     if user_id in ADMIN_IDS:
@@ -323,50 +323,87 @@ def handle_message(event):
     # ================= 記事本 =================
 
     if text == "記事本":
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("📒 輸贏記事本", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="➕ 新增紀錄", text="新增紀錄")),
-                QuickReplyButton(action=MessageAction(label="📄 查看紀錄", text="查看紀錄")),
-                QuickReplyButton(action=MessageAction(label="🧹 清除當月紀錄", text="清除當月")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
-            ])))
-        return
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("📒 記事本", quick_reply=QuickReply(items=[
+            QuickReplyButton(action=MessageAction(label="➕ 新增紀錄", text="新增紀錄")),
+            QuickReplyButton(action=MessageAction(label="📅 查看當月", text="查看當月")),
+            QuickReplyButton(action=MessageAction(label="⏪ 查看上月", text="查看上月")),
+            QuickReplyButton(action=MessageAction(label="🧹 清除紀錄", text="清除紀錄")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+        ])))
+    return
 
-    if text == "新增紀錄":
-        user_state[user_id] = "add_money"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("輸入金額 (+/-)"))
-        return
-
-    if user_state.get(user_id) == "add_money":
+   if user_state.get(user_id) == "add_money":
+    try:
         amt = int(text)
-        db.execute("INSERT INTO ledger VALUES(?,?,?)",(user_id,amt,datetime.now().strftime("%Y-%m-%d")))
-        db.commit()
-        user_state[user_id] = None
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已紀錄", quick_reply=back_menu()))
+    except:
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入數字"))
         return
 
-    if text == "查看紀錄":
-        cur = db.execute("SELECT amount,time FROM ledger WHERE user_id=?", (user_id,))
-        rows = cur.fetchall()
-        msg = "📄 紀錄\n\n"
-        for a,t in rows:
-            msg += f"{t} : {a}\n"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
-        return
+    now = datetime.now()
+    db.execute("INSERT INTO ledger VALUES(?,?,?)",
+        (user_id, amt, now.strftime("%Y-%m-%d %H:%M:%S"))
+    )
 
-    if text == "清除當月":
-        month = datetime.now().strftime("%Y-%m")
-        db.execute("DELETE FROM ledger WHERE user_id=? AND time LIKE ?", (user_id,f"{month}%"))
-        db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🧹 本月已清除", quick_reply=back_menu()))
-        return
+    # ✅ 只保留最近 2 個月
+    limit_month = (now.replace(day=1)).strftime("%Y-%m")
+    db.execute(
+        "DELETE FROM ledger WHERE user_id=? AND time < date('now','-2 months')",
+        (user_id,)
+    )
 
-    line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+    db.commit()
+    user_state[user_id] = None
+    line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已紀錄", quick_reply=back_menu()))
+    return
 
+    if text == "查看當月":
+    month = datetime.now().strftime("%Y-%m")
+    cur = db.execute(
+        "SELECT amount,time FROM ledger WHERE user_id=? AND time LIKE ? ORDER BY time DESC",
+        (user_id, f"{month}%")
+    )
+    rows = cur.fetchall()
+
+    msg = "📅 本月紀錄\n\n"
+    for a,t in rows:
+        msg += f"{t} : {a}\n"
+
+    if not rows:
+        msg += "尚無紀錄"
+
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+    return
+
+    if text == "查看上月":
+    last_month = (datetime.now().replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+    cur = db.execute(
+        "SELECT amount,time FROM ledger WHERE user_id=? AND time LIKE ? ORDER BY time DESC",
+        (user_id, f"{last_month}%")
+    )
+    rows = cur.fetchall()
+
+    msg = "⏪ 上月紀錄\n\n"
+    for a,t in rows:
+        msg += f"{t} : {a}\n"
+
+    if not rows:
+        msg += "尚無紀錄"
+
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+    return
+       
+       if text == "清除紀錄":
+    db.execute("DELETE FROM ledger WHERE user_id=?", (user_id,))
+    db.commit()
+    line_bot_api.reply_message(event.reply_token, TextSendMessage("🧹 已清除所有紀錄", quick_reply=back_menu()))
+    return
 
 # ================= RUN =================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
