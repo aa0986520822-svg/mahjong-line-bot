@@ -16,7 +16,7 @@ handler = WebhookHandler(LINE_CHANNEL_SECRET)
 GROUP_LINK = "https://line.me/R/ti/g/XXXXXXXX"
 
 ADMIN_IDS = {
-    "Uxxxxxxxxxxxxxxxxxxxxxxxxxxxx",  # 換成你的 LINE USER ID
+    "Ua5794a5932d2427fcaa42ee039a2067a",  # 換成你的 LINE USER ID
 }
 
 DB_PATH = "data.db"
@@ -210,4 +210,5 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
