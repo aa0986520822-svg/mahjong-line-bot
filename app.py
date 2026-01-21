@@ -284,10 +284,11 @@ def start_timeout_thread():
 
 
 threading.Thread(target=start_timeout_thread, daemon=True).start()
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
-        db = get_db()
+    db = get_db()
 
     user_id = event.source.user_id
     text = event.message.text.strip()
@@ -672,6 +673,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
