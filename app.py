@@ -423,16 +423,16 @@ def handle_message(event):
             ])))
         return
 
-   # ===== 新增紀錄 =====
-# ===== 新增紀錄 =====
-if text == "新增紀錄":
-    user_state[user_id] = {"mode": "note_amount"}
+  # ===== 新增紀錄 =====
+    if text == "新增紀錄":
+        user_state[user_id] = {"mode": "note_amount"}
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
-    )
-    return
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+        )
+        return
+
 
 
 # ===== 記事本只輸入金額 =====
@@ -666,6 +666,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
