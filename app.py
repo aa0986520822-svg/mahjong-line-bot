@@ -13,7 +13,7 @@ LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-GROUP_LINK = "https://line.me/R/ti/g/XXXXXXXX"
+SYSTEM_GROUP_LINK = "https://line.me/R/ti/g/一般玩家群"
 
 ADMIN_IDS = {
     "Ua5794a5932d2427fcaa42ee039a2067a",
@@ -57,7 +57,7 @@ def init_db():
         shop_id TEXT,
         name TEXT,
         open INT,
-        approved INT
+        approved INT,
         group_link TEXT
     )""")
 
@@ -84,6 +84,20 @@ def create_table_no(price, shop_id):
                (price, shop_id, now))
     db.commit()
     return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+    def get_group_link(shop_id):
+    db = get_db()
+
+    if shop_id:
+        row = db.execute(
+            "SELECT group_link FROM shops WHERE shop_id=?",
+            (shop_id,)
+        ).fetchone()
+
+     if row and row[0]:
+            return row[0]
+
+    return SYSTEM_GROUP_LINK
 
 
 # ================= 倒數釋放 =================
@@ -169,9 +183,17 @@ def check_confirm(table_no):
         return
 
     for (u,) in rows:
-        line_bot_api.push_message(u, TextSendMessage(
-            f"🎉 成桌成功\n🪑 桌號 {table_no}\n{GROUP_LINK}"
-        ))
+        row = db.execute(
+        "SELECT shop_id FROM tables WHERE id=?",
+        (table_no,)
+     ).fetchone()
+
+    shop_id = row[0] if row else None
+    group = get_group_link(shop_id)
+
+    line_bot_api.push_message(u, TextSendMessage(
+    f"🎉 成桌成功\n🪑 桌號 {table_no}\n{group}"
+    ))
 
     db.execute("DELETE FROM match_users WHERE table_no=?", (table_no,))
     db.commit()
@@ -216,7 +238,14 @@ def handle_message(event):
     db = get_db()
     user_id = event.source.user_id
     text = event.message.text.strip()
-
+     if event.source.type == "group":
+        if text.lower() in ["群id", "groupid", "群組id"]:
+            gid = event.source.group_id
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(f"📌 群組ID：\n{gid}")
+            )
+            return
     if user_state.get(user_id) == "set_group":
     db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
     db.commit()
@@ -407,7 +436,7 @@ def handle_message(event):
 
     # ===== 人數 =====
 
-    if text in ["我1人","我2人","我3人"] and user_id in user_state:
+ if text in ["我1人","我2人","我3人"] and user_id in user_state:
         people = int(text[1])
         price = user_state[user_id]
         shop_id = shop_match_state.get(user_id)
@@ -423,17 +452,17 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage(f"✅ 已加入 {price}\n目前 {total}/4", quick_reply=back_menu()))
 
-        if total >= 4:
+ if total >= 4:
             users = db.execute(
                 "SELECT user_id FROM match_users WHERE price=? AND shop_id IS ?",
                 (price,shop_id)
             ).fetchall()
 
-            for (u,) in users:
-               row = db.execute("SELECT group_link FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
-                group = row[0] if row and row[0] else "尚未設定群組"
+            group = get_group_link(shop_id)
 
-                line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{group}"))
+  if shop_id:
+            line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{group}"))
+
 
 
             if shop_id:
@@ -601,6 +630,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
