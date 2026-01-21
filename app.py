@@ -435,33 +435,36 @@ def handle_message(event):
         return
 
     # ===== 記事本只輸入金額 =====
-    if user_state.get(user_id, {}).get("mode") == "note_amount":
 
-        val = text.strip()
+if user_state.get(user_id, {}).get("mode") == "note_amount":
 
-        if not re.fullmatch(r"-?\d+", val):
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
-            )
-            return
+    val = text.strip()
 
-        amount = int(val)
-
-        db.execute(
-            "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
-            (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
-        )
-
-        db.commit()
-
-        user_state[user_id]["mode"] = "note_menu"
-
+    if not re.fullmatch(r"-?\d+", val):
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("✅ 已新增紀錄", quick_reply=back_menu())
+            TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
         )
         return
+
+    amount = int(val)
+
+    db.execute(
+        "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
+        (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
+    )
+
+    db.commit()
+
+    # ✅ 清狀態
+    user_state.pop(user_id, None)
+
+    # ✅ 回主選單
+    line_bot_api.reply_message(
+        event.reply_token,
+        main_menu(user_id)
+    )
+    return
 
 
 
@@ -666,6 +669,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
