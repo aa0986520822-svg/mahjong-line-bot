@@ -78,6 +78,49 @@ def init_db():
     )""")
 
     db.commit()
+def init_db():
+    db = get_db()
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS match_users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        shop_id INTEGER,
+        amount TEXT,
+        status TEXT,
+        table_no INTEGER,
+        expire REAL
+    )
+    """)
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS tables (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        shop_id INTEGER,
+        table_no INTEGER,
+        users TEXT,
+        created_at TEXT
+    )
+    """)
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        content TEXT,
+        created_at TEXT
+    )
+    """)
+
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS shops (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        status TEXT
+    )
+    """)
+
+    db.commit()
 
 
 def main_menu(user_id=None):
@@ -250,9 +293,9 @@ def handle_message(event):
     text = event.message.text.strip()
 
     # ===== 任意輸入打開選單 =====
-    if text.lower() in ["hi", "hello", "哈囉", "選單", "menu"]:
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
+   if text:
+    line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+    return
 
     # ===== 指定店家 =====
     if text == "指定店家":
@@ -603,4 +646,5 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
