@@ -206,14 +206,18 @@ def check_confirm(table_no):
 
 def main_menu(user_id=None):
     items = [
-        QuickReplyButton(action=MessageAction(label="🎯 配桌", text="配桌")),
         QuickReplyButton(action=MessageAction(label="🏪 指定店家", text="指定店家")),
         QuickReplyButton(action=MessageAction(label="📒 記事本", text="記事本")),
         QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")),
     ]
+
     if user_id in ADMIN_IDS:
-        items.append(QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理")))
+        items.append(
+            QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理"))
+        )
+
     return TextSendMessage("請選擇功能", quick_reply=QuickReply(items=items))
+
 
 
 def back_menu():
@@ -647,6 +651,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
