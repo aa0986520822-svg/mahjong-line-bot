@@ -85,6 +85,51 @@ def create_table_no(price, shop_id):
     db.commit()
     return db.execute("SELECT last_insert_rowid()").fetchone()[0]
 
+
+def get_group_link(shop_id):
+    db = get_db()
+
+    if shop_id:
+        row = db.execute(
+            "SELECT group_link FROM shops WHERE shop_id=?",
+            (shop_id,)
+        ).fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+    return SYSTEM_GROUP_LINK
+
+def get_group_link(shop_id):
+    db = get_db()
+
+    if shop_id:
+        row = db.execute(
+            "SELECT group_link FROM shops WHERE shop_id=?",
+            (shop_id,)
+        ).fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+    return SYSTEM_GROUP_LINK
+
+
+def get_group_link(shop_id):
+    db = get_db()
+
+    if shop_id:
+        row = db.execute(
+            "SELECT group_link FROM shops WHERE shop_id=?",
+            (shop_id,)
+        ).fetchone()
+
+        if row and row[0]:
+            return row[0]
+
+    return SYSTEM_GROUP_LINK
+
+
     def get_group_link(shop_id):
     db = get_db()
 
@@ -237,8 +282,9 @@ def handle_message(event):
     init_db()
     db = get_db()
     user_id = event.source.user_id
-    text = event.message.text.strip()
-     if event.source.type == "group":
+        text = event.message.text.strip()
+
+    if event.source.type == "group":
         if text.lower() in ["群id", "groupid", "群組id"]:
             gid = event.source.group_id
             line_bot_api.reply_message(
@@ -246,25 +292,34 @@ def handle_message(event):
                 TextSendMessage(f"📌 群組ID：\n{gid}")
             )
             return
-    if user_state.get(user_id) == "set_group":
-    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
-    db.commit()
-    user_state[user_id] = None
 
-    line_bot_api.reply_message(event.reply_token,
-        TextSendMessage("✅ 群組連結已更新", quick_reply=back_menu()))
-    return
+            )
+            return
+      if user_state.get(user_id) == "set_group":
+        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
+        db.commit()
+        user_state[user_id] = None
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 群組連結已更新", quick_reply=back_menu())
+        )
+        return
 
 
-    if user_state.get(user_id, "").startswith("admin_set_group"):
-    sid = user_state[user_id].split(":")[1]
-    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
-    db.commit()
-    user_state[user_id] = None
 
-    line_bot_api.reply_message(event.reply_token,
-        TextSendMessage("✅ 已更新群組", quick_reply=back_menu()))
-    return
+       if user_state.get(user_id, "").startswith("admin_set_group"):
+        sid = user_state[user_id].split(":")[1]
+        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
+        db.commit()
+        user_state[user_id] = None
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已更新群組", quick_reply=back_menu())
+        )
+        return
+
     if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
@@ -436,13 +491,16 @@ def handle_message(event):
 
     # ===== 人數 =====
 
- if text in ["我1人","我2人","我3人"] and user_id in user_state:
+    if text in ["我1人","我2人","我3人"] and user_id in user_state:
         people = int(text[1])
         price = user_state[user_id]
         shop_id = shop_match_state.get(user_id)
 
-        db.execute("INSERT INTO match_users VALUES(?,?,?,?)",(user_id,price,people,shop_id))
-        db.commit()
+        db.execute(
+    "INSERT INTO match_users VALUES(?,?,?,?,?,?,?)",
+    (user_id, price, people, shop_id, "waiting", None, None)
+)
+
 
         total = db.execute(
             "SELECT SUM(people) FROM match_users WHERE price=? AND shop_id IS ?",
@@ -630,6 +688,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
