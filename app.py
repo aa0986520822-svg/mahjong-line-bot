@@ -28,9 +28,12 @@ COUNTDOWN_READY = 20
 # ================= DB =================
 
 def get_db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
-    return g.db
+    try:
+        if "db" not in g:
+            g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        return g.db
+    except:
+        return sqlite3.connect(DB_PATH, check_same_thread=False)
 
 
 @app.teardown_appcontext
@@ -473,8 +476,12 @@ def timeout_checker():
 
         time.sleep(3)
 
+def start_timeout_thread():
+    with app.app_context():
+        timeout_checker()
 
-threading.Thread(target=timeout_checker, daemon=True).start()
+threading.Thread(target=start_timeout_thread, daemon=True).start()
+
 
 
 # ================= 店家後台 =================
@@ -635,5 +642,7 @@ def handle_admin(event):
 # ================= MAIN =================
 
 if __name__ == "__main__":
-    init_db()
+    with app.app_context():
+        init_db()
+
     app.run(host="0.0.0.0", port=5000)
