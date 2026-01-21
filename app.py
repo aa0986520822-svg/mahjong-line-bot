@@ -221,7 +221,7 @@ def handle_message(event):
 
     user_id = event.source.user_id
     text = event.message.text.strip()
-
+    
     # ===== 自動主選單 =====
     if text.lower() in ["hi", "hello", "哈囉"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
@@ -636,8 +636,9 @@ def handle_admin(event):
 
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("✅ 已完成審核", quick_reply=back_menu()))
-        return
-
+   
+   line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+    return
 
 # ================= MAIN =================
 
@@ -646,3 +647,4 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
