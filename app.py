@@ -343,14 +343,14 @@ def handle_message(event):
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
         db.commit()
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("⛔ 已停用", quick_reply=back_menu()))
+            TextSendMessage("⛔ 已停用", quick_reply=back_menu())
         return
 
     if user_id in ADMIN_IDS and text.startswith("群組:"):
         sid = text.split(":")[1]
         user_state[user_id] = f"admin_set_group:{sid}"
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入新的群組連結", quick_reply=back_menu())))
+            TextSendMessage("請輸入新的群組連結", quick_reply=back_menu())
         return
 
     if user_state.get(user_id, "").startswith("admin_set_group"):
@@ -359,7 +359,7 @@ def handle_message(event):
         db.commit()
         user_state[user_id] = None
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已更新群組", quick_reply=back_menu()))
+            TextSendMessage("✅ 已更新群組", quick_reply=back_menu())
         return
 
     if user_id in ADMIN_IDS and text.startswith("刪除:"):
@@ -367,7 +367,7 @@ def handle_message(event):
         db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
         db.commit()
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("🗑 已刪除", quick_reply=back_menu()))
+            TextSendMessage("🗑 已刪除", quick_reply=back_menu())
         return
 
 
@@ -379,12 +379,12 @@ def handle_message(event):
         if not shop:
             user_state[user_id] = "register_shop"
             line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("請輸入麻將館名稱", quick_reply=back_menu())))
+                TextSendMessage("請輸入麻將館名稱", quick_reply=back_menu())
             return
 
         if shop[3] == 0:
             line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("⏳ 審核中，請等待管理員通過", quick_reply=back_menu()))
+                TextSendMessage("⏳ 審核中，請等待管理員通過", quick_reply=back_menu())
             return
 
         status = "營業中" if shop[2] else "休息中"
@@ -410,7 +410,7 @@ def handle_message(event):
         user_state[user_id] = None
 
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已送出申請，等待審核", quick_reply=back_menu()))
+            TextSendMessage("✅ 已送出申請，等待審核", quick_reply=back_menu())
 
         for admin in ADMIN_IDS:
             line_bot_api.push_message(admin, TextSendMessage(
@@ -422,14 +422,14 @@ def handle_message(event):
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
         db.commit()
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("🟢 已開始營業", quick_reply=back_menu()))
+            TextSendMessage("🟢 已開始營業", quick_reply=back_menu())
         return
 
     if text == "今日休息":
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (user_id,))
         db.commit()
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("🔴 今日休息", quick_reply=back_menu()))
+            TextSendMessage("🔴 今日休息", quick_reply=back_menu())
         return
         # ===== 店家設定群組 =====
 
@@ -437,7 +437,7 @@ if text == "設定群組":
     user_state[user_id] = "shop_set_group"
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu()))
+        TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu())
     )
     return
 
@@ -474,7 +474,7 @@ if user_state.get(user_id) == "shop_set_group":
     if text == "新增紀錄":
         user_state[user_id] = "add_money"
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入金額 (+ / -)", quick_reply=back_menu())))
+            TextSendMessage("請輸入金額 (+ / -)", quick_reply=back_menu())
         return
 
     if user_state.get(user_id) == "add_money":
@@ -492,7 +492,7 @@ if user_state.get(user_id) == "shop_set_group":
 
         user_state[user_id] = None
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已紀錄", quick_reply=back_menu()))
+            TextSendMessage("✅ 已紀錄", quick_reply=back_menu())
         return
 
     if text == "查看當月":
@@ -509,7 +509,7 @@ if user_state.get(user_id) == "shop_set_group":
             msg += "尚無紀錄"
 
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage(msg, quick_reply=back_menu()))
+            TextSendMessage(msg, quick_reply=back_menu())
         return
 
     if text == "查看上月":
@@ -533,7 +533,7 @@ if user_state.get(user_id) == "shop_set_group":
         db.execute("DELETE FROM ledger WHERE user_id=?", (user_id,))
         db.commit()
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("🧹 已清除", quick_reply=back_menu()))
+            TextSendMessage("🧹 已清除", quick_reply=back_menu())
         return
 
 
@@ -549,5 +549,6 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
