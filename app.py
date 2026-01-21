@@ -347,21 +347,22 @@ def handle_message(event):
             TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items)))
         return
 
-    # ===== 金額 =====
+       # ===== 金額 =====
     if text.startswith("金額:"):
         amount = text.split(":", 1)[1]
+
         if user_id not in user_state:
             line_bot_api.reply_message(event.reply_token, main_menu(user_id))
             return
 
         user_state[user_id]["amount"] = amount
 
-                items = [
-            QuickReplyButton(action=MessageAction(label="1人", text="人數:1"))),
-            QuickReplyButton(action=MessageAction(label="2人", text="人數:2"))),
-            QuickReplyButton(action=MessageAction(label="3人", text="人數:3"))),
-            QuickReplyButton(action=MessageAction(label="4人", text="人數:4"))),
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))),
+        items = [
+            QuickReplyButton(action=MessageAction(label="1人", text="人數:1")),
+            QuickReplyButton(action=MessageAction(label="2人", text="人數:2")),
+            QuickReplyButton(action=MessageAction(label="3人", text="人數:3")),
+            QuickReplyButton(action=MessageAction(label="4人", text="人數:4")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]
 
         line_bot_api.reply_message(
@@ -369,6 +370,7 @@ def handle_message(event):
             TextSendMessage("請選擇人數", quick_reply=QuickReply(items=items))
         )
         return
+
 
     # ===== 人數 =====
     # ===== 選擇人數加入配桌 =====
@@ -675,6 +677,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
