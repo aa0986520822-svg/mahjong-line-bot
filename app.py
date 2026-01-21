@@ -482,6 +482,8 @@ def handle_message(event):
 # ================= TIMEOUT 檢查 =================
 
 def timeout_checker():
+    init_db()  # ✅ 保證資料表先建立
+
     while True:
         try:
             db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -500,6 +502,7 @@ def timeout_checker():
                     SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL
                     WHERE table_id=?
                 """, (table_id,))
+
                 try_make_table(shop_id, amount)
 
             db.commit()
@@ -677,6 +680,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
