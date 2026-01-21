@@ -208,7 +208,7 @@ def callback():
 
 
 # ================= MESSAGE =================
-
+from linebot.models import FollowEvent
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
@@ -350,7 +350,7 @@ def handle_message(event):
         sid = text.split(":")[1]
         user_state[user_id] = f"admin_set_group:{sid}"
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入新的群組連結"))
+            TextSendMessage("請輸入新的群組連結", quick_reply=back_menu())))
         return
 
     if user_state.get(user_id, "").startswith("admin_set_group"):
@@ -379,7 +379,7 @@ def handle_message(event):
         if not shop:
             user_state[user_id] = "register_shop"
             line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("請輸入麻將館名稱"))
+                TextSendMessage("請輸入麻將館名稱", quick_reply=back_menu())))
             return
 
         if shop[3] == 0:
@@ -437,7 +437,7 @@ if text == "設定群組":
     user_state[user_id] = "shop_set_group"
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage("🔗 請貼上 LINE 群組邀請連結")
+        TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu()))
     )
     return
 
@@ -474,7 +474,7 @@ if user_state.get(user_id) == "shop_set_group":
     if text == "新增紀錄":
         user_state[user_id] = "add_money"
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入金額 (+ / -)"))
+            TextSendMessage("請輸入金額 (+ / -)", quick_reply=back_menu())))
         return
 
     if user_state.get(user_id) == "add_money":
@@ -549,4 +549,5 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
