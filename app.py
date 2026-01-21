@@ -293,9 +293,16 @@ def handle_message(event):
     text = event.message.text.strip()
 
     # ===== 任意輸入打開選單 =====
-   if text:
+    if user_id not in user_state and text not in [
+    "指定店家","記事本","店家後台","店家管理",
+    "新增紀錄","查看當月","查看上月","清除紀錄",
+    "開始營業","今日休息","設定群組",
+    "我1人","我2人","我3人",
+    "加入","放棄","取消配桌"
+]:
     line_bot_api.reply_message(event.reply_token, main_menu(user_id))
     return
+
 
     # ===== 指定店家 =====
     if text == "指定店家":
@@ -646,5 +653,6 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
