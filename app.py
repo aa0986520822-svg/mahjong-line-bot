@@ -44,15 +44,18 @@ def close_db(e=None):
 def init_db():
     db = get_db()
 
-    db.execute("""CREATE TABLE IF NOT EXISTS shops(
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS shops(
         shop_id TEXT,
         name TEXT,
         open INT,
         approved INT,
         group_link TEXT
-    )""")
+    )
+    """)
 
-    db.execute("""CREATE TABLE IF NOT EXISTS match_users(
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS match_users(
         user_id TEXT,
         people INT,
         shop_id TEXT,
@@ -61,66 +64,29 @@ def init_db():
         expire REAL,
         table_id TEXT,
         table_index INT
-    )""")
+    )
+    """)
 
-    db.execute("""CREATE TABLE IF NOT EXISTS tables(
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS tables(
         id TEXT,
         shop_id TEXT,
         amount TEXT,
         table_index INT
-    )""")
+    )
+    """)
 
-    db.execute("""CREATE TABLE IF NOT EXISTS notes(
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS notes(
         user_id TEXT,
         content TEXT,
         amount INT,
         time TEXT
-    )""")
-
-    db.commit()
-def init_db():
-    db = get_db()
-
-    db.execute("""
-    CREATE TABLE IF NOT EXISTS match_users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        shop_id INTEGER,
-        amount TEXT,
-        status TEXT,
-        table_no INTEGER,
-        expire REAL
-    )
-    """)
-
-    db.execute("""
-    CREATE TABLE IF NOT EXISTS tables (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        shop_id INTEGER,
-        table_no INTEGER,
-        users TEXT,
-        created_at TEXT
-    )
-    """)
-
-    db.execute("""
-    CREATE TABLE IF NOT EXISTS notes (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id TEXT,
-        content TEXT,
-        created_at TEXT
-    )
-    """)
-
-    db.execute("""
-    CREATE TABLE IF NOT EXISTS shops (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        status TEXT
     )
     """)
 
     db.commit()
+
 
 
 def main_menu(user_id=None):
@@ -680,6 +646,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
