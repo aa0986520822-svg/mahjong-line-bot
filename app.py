@@ -448,21 +448,21 @@ def handle_message(event):
 
         amount = int(val)
 
+        db.execute(
+            "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
+            (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
+        )
 
-    db.execute(
-        "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
-        (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
-    )
+        db.commit()
 
-    db.commit()
+        user_state[user_id]["mode"] = "note_menu"
 
-    user_state[user_id]["mode"] = "note_menu"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已新增紀錄", quick_reply=back_menu())
+        )
+        return
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("✅ 已新增紀錄", quick_reply=back_menu())
-    )
-    return
 
 
 # ================= TIMEOUT 檢查 =================
@@ -666,6 +666,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
