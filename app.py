@@ -396,6 +396,7 @@ def handle_message(event):
                 quick_reply=QuickReply(items=[
                     QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
                     QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
+                    QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
                     QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
                 ])
             )
@@ -430,6 +431,31 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("🔴 今日休息", quick_reply=back_menu()))
         return
+        # ===== 店家設定群組 =====
+
+if text == "設定群組":
+    user_state[user_id] = "shop_set_group"
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("🔗 請貼上 LINE 群組邀請連結")
+    )
+    return
+
+
+if user_state.get(user_id) == "shop_set_group":
+    db.execute(
+        "UPDATE shops SET group_link=? WHERE shop_id=?",
+        (text, user_id)
+    )
+    db.commit()
+    user_state[user_id] = None
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("✅ 群組連結已設定完成", quick_reply=back_menu())
+    )
+    return
+
 
 
     # ===== 記事本 =====
@@ -523,3 +549,4 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
