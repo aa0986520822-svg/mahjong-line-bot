@@ -484,50 +484,50 @@ return
         
         # ===== 店家管理 ADMIN =====
 
-   if text == "店家管理" and user_id in ADMIN_IDS:
-    line_bot_api.reply_message(
-        event.reply_token,
+  if text == "店家管理" and user_id in ADMIN_IDS:
+    line_bot_api.reply_message(event.reply_token,
         TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
             QuickReplyButton(action=MessageAction(label="✅ 審核店家", text="審核店家")),
             QuickReplyButton(action=MessageAction(label="🗑 刪除店家", text="刪除店家")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
         ]))
     )
     return
 
 
+    if text == "查看店家":
+    shops = db.execute("SELECT name,open,approved FROM shops").fetchall()
 
-    if text == "查看店家" and user_id in ADMIN_IDS:
-        rows = db.execute("SELECT shop_id,name,open FROM shops").fetchall()
-        msg = "📋 店家列表\n\n"
-
-        for r in rows:
-            msg += f"{r[0]} | {r[1]} | {'營業' if r[2] else '休息'}\n"
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(msg, quick_reply=back_menu())
-        )
+    if not shops:
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("目前沒有店家", quick_reply=back_menu()))
         return
+
+    msg = "🏪 店家列表\n\n"
+    for n,o,a in shops:
+        msg += f"{n} | {'營業中' if o else '休息'} | {'已審' if a else '未審'}\n"
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage(msg, quick_reply=back_menu()))
+    return
+
         
-    if text == "審核店家":
+  if text == "審核店家":
     shops = db.execute("SELECT shop_id,name FROM shops WHERE approved=0").fetchall()
 
     if not shops:
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("目前沒有待審店家", quick_reply=back_menu()))
+            TextSendMessage("沒有待審店家", quick_reply=back_menu()))
         return
 
-    items = [
-        QuickReplyButton(action=MessageAction(label=f"🏪 {n}", text=f"審核:{i}"))
-        for i,n in shops
-    ]
-    items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+    items = [QuickReplyButton(action=MessageAction(label=n, text=f"審核:{i}")) for i,n in shops]
+    items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
 
     line_bot_api.reply_message(event.reply_token,
-        TextSendMessage("請選擇要審核的店家", quick_reply=QuickReply(items=items)))
+        TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
     return
+
        
 if text.startswith("審核:"):
     sid = text.split(":")[1]
@@ -536,13 +536,14 @@ if text.startswith("審核:"):
     shop = db.execute("SELECT name FROM shops WHERE shop_id=?", (sid,)).fetchone()
 
     line_bot_api.reply_message(event.reply_token,
-        TextSendMessage(f"審核店家：{shop[0]}", quick_reply=QuickReply(items=[
+        TextSendMessage(f"審核：{shop[0]}", quick_reply=QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="✅ 同意", text="同意")),
             QuickReplyButton(action=MessageAction(label="❌ 不同意", text="不同意")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
         ]))
+    )
     return
-                               
+
 if text in ["同意","不同意"] and user_state.get(user_id,"").startswith("audit:"):
     sid = user_state[user_id].split(":")[1]
 
@@ -551,7 +552,7 @@ if text in ["同意","不同意"] and user_state.get(user_id,"").startswith("aud
         msg = "✅ 已通過審核"
     else:
         db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
-        msg = "❌ 已拒絕並刪除"
+        msg = "❌ 已拒絕"
 
     db.commit()
     user_state[user_id] = None
@@ -560,20 +561,27 @@ if text in ["同意","不同意"] and user_state.get(user_id,"").startswith("aud
         TextSendMessage(msg, quick_reply=back_menu()))
     return
 
-        
-    if text == "刪除店家" and user_id in ADMIN_IDS:
-        rows = db.execute("SELECT shop_id,name FROM shops").fetchall()
-        items = [
-            QuickReplyButton(action=MessageAction(label=f"🗑 {n}", text=f"admin_del:{i}"))
-            for i,n in rows
-        ]
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("選擇要刪除的店家", quick_reply=QuickReply(items=items))
-        )
-        return
+        
+if text == "刪除店家":
+    shops = db.execute("SELECT shop_id,name FROM shops").fetchall()
+
+    items = [QuickReplyButton(action=MessageAction(label=n, text=f"刪:{i}")) for i,n in shops]
+    items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("選擇刪除", quick_reply=QuickReply(items=items)))
+    return
+    
+if text.startswith("刪:"):
+    sid = text.split(":")[1]
+    db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
+    db.commit()
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("🗑 已刪除", quick_reply=back_menu()))
+    return
+
 
 
     if text.startswith("admin_del:") and user_id in ADMIN_IDS:
@@ -672,5 +680,6 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
