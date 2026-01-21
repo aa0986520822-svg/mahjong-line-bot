@@ -353,7 +353,8 @@ def handle_message(event):
             TextSendMessage("請輸入新的群組連結", quick_reply=back_menu())
         return
 
-    if user_state.get(user_id, "").startswith("admin_set_group"):
+    state = user_state.get(user_id)
+    if isinstance(state, str) and state.startswith("admin_set_group"):
         sid = user_state[user_id].split(":")[1]
         db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
         db.commit()
@@ -549,6 +550,7 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
