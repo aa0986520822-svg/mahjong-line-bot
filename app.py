@@ -287,23 +287,21 @@ threading.Thread(target=start_timeout_thread, daemon=True).start()
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
-    db = get_db()
+        db = get_db()
 
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # ===== 任意輸入打開選單 =====
-   # ===== 任意輸入回主選單 =====
-if user_id not in user_state and text not in [
-    "指定店家","記事本","店家後台","店家管理",
-    "新增紀錄","查看當月","查看上月","清除紀錄",
-    "開始營業","今日休息","設定群組",
-    "我1人","我2人","我3人",
-    "加入","放棄","取消配桌"
-]:
-    line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-    return
-
+    # ===== 任意輸入回主選單 =====
+    if user_id not in user_state and text not in [
+        "指定店家","記事本","店家後台","店家管理",
+        "新增紀錄","查看當月","查看上月","清除紀錄",
+        "開始營業","今日休息","設定群組",
+        "我1人","我2人","我3人",
+        "加入","放棄","取消配桌","選單"
+    ]:
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return
 
 
     # ===== 指定店家 =====
@@ -311,8 +309,10 @@ if user_id not in user_state and text not in [
         rows = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
 
         if not rows:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("目前沒有營業店家", quick_reply=back_menu())
+            )
             return
 
         items = []
@@ -321,13 +321,17 @@ if user_id not in user_state and text not in [
 
         items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items))
+        )
         return
+
 
     # ===== 選店 =====
     if text.startswith("店家:"):
         shop_id = text.split(":", 1)[1]
+
         user_state[user_id] = {"shop_id": shop_id}
 
         items = [
@@ -655,6 +659,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
