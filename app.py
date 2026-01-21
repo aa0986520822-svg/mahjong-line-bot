@@ -293,7 +293,7 @@ def handle_message(event):
     text = event.message.text.strip()
 
     # ===== 任意輸入打開選單 =====
-    if user_id not in user_state and text not in [
+   if user_id not in user_state and text not in [
     "指定店家","記事本","店家後台","店家管理",
     "新增紀錄","查看當月","查看上月","清除紀錄",
     "開始營業","今日休息","設定群組",
@@ -653,6 +653,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
