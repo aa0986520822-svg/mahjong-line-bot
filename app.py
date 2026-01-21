@@ -368,30 +368,43 @@ def handle_message(event):
         return
 
     # ===== 人數 =====
-    if text.startswith("人數:"):
+    # ===== 選擇人數加入配桌 =====
+if text.startswith("人數:"):
+    try:
         people = int(text.split(":", 1)[1])
-        data = user_state.get(user_id)
-
-        if not data:
-            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-            return
-
-        shop_id = data["shop_id"]
-        amount = data["amount"]
-
-        db.execute("""
-            INSERT OR REPLACE INTO match_users 
-            (user_id,people,shop_id,amount,status,expire,table_id,table_index)
-            VALUES(?,?,?,?, 'waiting', NULL, NULL, NULL)
-        """, (user_id, people, shop_id, amount))
-
-        db.commit()
-
-        try_make_table(shop_id, amount)
-
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu()))
+    except:
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
+
+    data = user_state.get(user_id)
+
+    if not data:
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return
+
+    shop_id = data.get("shop_id")
+    amount = data.get("amount")
+
+    if not shop_id or not amount:
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return
+
+    db.execute("""
+        INSERT OR REPLACE INTO match_users 
+        (user_id, people, shop_id, amount, status, expire, table_id, table_index)
+        VALUES (?, ?, ?, ?, 'waiting', NULL, NULL, NULL)
+    """, (user_id, people, shop_id, amount))
+
+    db.commit()
+
+    try_make_table(shop_id, amount)
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
+    )
+    return
+
 
     # ===== 加入 =====
     if text == "加入":
@@ -659,6 +672,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
