@@ -424,6 +424,7 @@ def handle_message(event):
         return
 
    # ===== 新增紀錄 =====
+# ===== 新增紀錄 =====
 if text == "新增紀錄":
     user_state[user_id] = {"mode": "note_amount"}
 
@@ -462,6 +463,7 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
         TextSendMessage("✅ 已新增紀錄", quick_reply=back_menu())
     )
     return
+
 
 # ================= TIMEOUT 檢查 =================
 
@@ -664,6 +666,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
