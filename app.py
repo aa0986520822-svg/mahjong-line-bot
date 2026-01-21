@@ -217,7 +217,8 @@ def handle_message(event):
 
     user_id = event.source.user_id
     text = event.message.text.strip()
-
+    print("DEBUG USER_ID =>", user_id)
+    
     if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
@@ -404,3 +405,4 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
