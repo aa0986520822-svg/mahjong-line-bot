@@ -97,17 +97,18 @@ def try_make_table(shop_id):
         ORDER BY rowid
     """, (shop_id,)).fetchall()
 
-    total = 0
-    selected = []
+   for u,p in rows:
+    if total + p > 4:
+        continue
 
-    for u,p in rows:
-        total += p
-        selected.append(u)
-        if total >= 4:
-            break
+    total += p
+    selected.append(u)
 
-    if total < 4:
-        return
+    if total == 4:
+        break
+        
+    if total != 4:
+    return
 
     table_no = f"{shop_id}_{int(time.time())}"
     expire = time.time() + COUNTDOWN
@@ -351,18 +352,34 @@ def handle_message(event):
             ])))
         return
 
-    if text.startswith("配桌:"):
-        sid = text.split(":")[1]
-        user_state[user_id] = sid
+   if text.startswith("配桌:"):
+    sid = text.split(":")[1]
 
+    row = db.execute(
+        "SELECT people FROM match_users WHERE user_id=? AND shop_id=?",
+        (user_id, sid)
+    ).fetchone()
+
+    # 已在配桌中
+    if row:
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="我1人", text="我1人")),
-                QuickReplyButton(action=MessageAction(label="我2人", text="我2人")),
-                QuickReplyButton(action=MessageAction(label="我3人", text="我3人")),
+            TextSendMessage("⚠ 你已在配桌中", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="❌ 取消配桌", text="取消配桌")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ])))
         return
+
+    user_state[user_id] = sid
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("請選擇人數", quick_reply=QuickReply(items=[
+            QuickReplyButton(action=MessageAction(label="我1人", text="我1人")),
+            QuickReplyButton(action=MessageAction(label="我2人", text="我2人")),
+            QuickReplyButton(action=MessageAction(label="我3人", text="我3人")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+        ])))
+    return
+
 
     if text in ["我1人", "我2人", "我3人"] and user_id in user_state:
         sid = user_state[user_id]
@@ -382,6 +399,20 @@ def handle_message(event):
 
         try_make_table(sid)
         return
+        
+    if text == "取消配桌":
+    row = db.execute(
+        "SELECT shop_id FROM match_users WHERE user_id=?",
+        (user_id,)
+    ).fetchone()
+
+    if row:
+        db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+        db.commit()
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("❌ 已取消配桌", quick_reply=back_menu()))
+    return
 
     if text == "加入":
         row = db.execute("SELECT table_no FROM match_users WHERE user_id=?", (user_id,)).fetchone()
@@ -594,6 +625,7 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
