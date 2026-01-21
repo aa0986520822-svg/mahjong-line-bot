@@ -410,6 +410,7 @@ def handle_message(event):
             TextSendMessage("❌ 已放棄配桌", quick_reply=back_menu()))
         return
 
+   
     # ===== 記事本 =====
     if text == "記事本":
         user_state[user_id] = "note_menu"
@@ -423,7 +424,7 @@ def handle_message(event):
             ])))
         return
 
-  # ===== 新增紀錄 =====
+    # ===== 新增紀錄 =====
     if text == "新增紀錄":
         user_state[user_id] = {"mode": "note_amount"}
 
@@ -433,21 +434,20 @@ def handle_message(event):
         )
         return
 
+    # ===== 記事本只輸入金額 =====
+    if user_state.get(user_id, {}).get("mode") == "note_amount":
 
+        val = text.strip()
 
-# ===== 記事本只輸入金額 =====
-if user_state.get(user_id, {}).get("mode") == "note_amount":
+        if not re.fullmatch(r"-?\d+", val):
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+            )
+            return
 
-    val = text.strip()
+        amount = int(val)
 
-    if not re.fullmatch(r"-?\d+", val):
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
-        )
-        return
-
-    amount = int(val)
 
     db.execute(
         "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
@@ -666,6 +666,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
