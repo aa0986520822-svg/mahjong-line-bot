@@ -58,6 +58,7 @@ def init_db():
         name TEXT,
         open INT,
         approved INT
+        group_link TEXT
     )""")
 
     db.execute("""CREATE TABLE IF NOT EXISTS ledger(
@@ -216,9 +217,45 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
+    if user_state.get(user_id) == "set_group":
+    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
+    db.commit()
+    user_state[user_id] = None
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("✅ 群組連結已更新", quick_reply=back_menu()))
+    return
+
+
+    if user_state.get(user_id, "").startswith("admin_set_group"):
+    sid = user_state[user_id].split(":")[1]
+    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
+    db.commit()
+    user_state[user_id] = None
+
+    line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("✅ 已更新群組", quick_reply=back_menu()))
+    return
     if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
+        
+    if text == "設定群組":
+        user_state[user_id] = "set_group"
+        line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("請貼上 LINE 群組邀請連結"))
+        return
+
+    if user_state.get(user_id) == "set_group":
+        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?",(text,user_id))
+        db.commit()
+        user_state[user_id] = None
+
+        line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("✅ 群組連結已更新", quick_reply=back_menu()))
+        return
+
+    
 
     # ===== 成桌確認 =====
     if text == "加入":
@@ -252,6 +289,7 @@ def handle_message(event):
                 quick_reply=QuickReply(items=[
                     QuickReplyButton(action=MessageAction(label="✅ 核准", text=f"核准:{sid}")),
                     QuickReplyButton(action=MessageAction(label="⛔ 停用", text=f"停用:{sid}")),
+                    QuickReplyButton(action=MessageAction(label="🔗 群組", text=f"群組:{sid}")),
                     QuickReplyButton(action=MessageAction(label="🗑 刪除", text=f"刪除:{sid}")),
                     QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
                 ])
@@ -276,6 +314,13 @@ def handle_message(event):
         db.commit()
         line_bot_api.reply_message(event.reply_token, TextSendMessage("⛔ 已停用", quick_reply=back_menu()))
         return
+        
+    if user_id in ADMIN_IDS and text.startswith("群組:"):
+        sid = text.split(":")[1]
+        user_state[user_id] = f"admin_set_group:{sid}"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入新的群組連結"))
+        return
+
 
     if user_id in ADMIN_IDS and text.startswith("刪除:"):
         sid = text.split(":")[1]
@@ -292,6 +337,7 @@ def handle_message(event):
                 TextSendMessage("你已在配桌中", quick_reply=QuickReply(items=[
                     QuickReplyButton(action=MessageAction(label="👀 查看配桌", text="查看配桌")),
                     QuickReplyButton(action=MessageAction(label="❌ 取消配桌", text="取消配桌")),
+                    QuickReplyButton(action=MessageAction(label="🔗 群組", text=f"群組:{sid}")),
                     QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
                 ])))
             return
@@ -384,7 +430,11 @@ def handle_message(event):
             ).fetchall()
 
             for (u,) in users:
-                line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{GROUP_LINK}"))
+               row = db.execute("SELECT group_link FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+                group = row[0] if row and row[0] else "尚未設定群組"
+
+                line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{group}"))
+
 
             if shop_id:
                 line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{GROUP_LINK}"))
@@ -427,10 +477,13 @@ def handle_message(event):
         status = "營業中" if shop[2] else "休息中"
 
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage(f"🏪 {shop[1]}\n目前狀態：{status}", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
-                QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+    TextSendMessage(f"🏪 {shop[1]}\n目前狀態：{status}", quick_reply=QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
+        QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
+        QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
+        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+    ])))
+
             ])))
         return
 
@@ -449,6 +502,12 @@ def handle_message(event):
         return
 
     if text == "開始營業":
+        if text == "設定群組":
+        user_state[user_id] = "set_group"
+        line_bot_api.reply_message(event.reply_token,
+        TextSendMessage("請貼上 LINE 群組邀請連結"))
+    return
+
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
         db.commit()
         line_bot_api.reply_message(event.reply_token, TextSendMessage("🟢 已開始營業", quick_reply=back_menu()))
@@ -542,5 +601,6 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
