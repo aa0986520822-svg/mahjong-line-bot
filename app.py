@@ -1,4 +1,5 @@
 import os, sqlite3, threading, time
+import re
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, g
 from linebot import LineBotApi, WebhookHandler
@@ -669,6 +670,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
