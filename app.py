@@ -423,28 +423,46 @@ def handle_message(event):
             ])))
         return
 
-    if text == "新增紀錄":
-        user_state[user_id] = "note_add"
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入：內容 金額\n例如：吃飯 120", quick_reply=back_menu()))
+   # ===== 新增紀錄 =====
+if text == "新增紀錄":
+    user_state[user_id] = {"mode": "note_amount"}
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+    )
+    return
+
+
+# ===== 記事本只輸入金額 =====
+if user_state.get(user_id, {}).get("mode") == "note_amount":
+
+    val = text.strip()
+
+    if not re.fullmatch(r"-?\d+", val):
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+        )
         return
 
-    if user_state.get(user_id) == "note_add":
-        try:
-            name, money = text.rsplit(" ",1)
-            money = int(money)
-        except:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("格式錯誤，例如：飲料 50", quick_reply=back_menu()))
-            return
+    amount = int(val)
 
-        db.execute("INSERT INTO notes VALUES(?,?,?,?)",
-                   (user_id,name,money,datetime.now().strftime("%Y-%m-%d")))
-        db.commit()
-        user_state[user_id]="note_menu"
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已新增", quick_reply=back_menu()))
-        return
+    db.execute(
+        "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
+        (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
+    )
+
+    db.commit()
+
+    user_state[user_id]["mode"] = "note_menu"
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("✅ 已新增紀錄", quick_reply=back_menu())
+    )
+    return
+
 # ================= TIMEOUT 檢查 =================
 
 def timeout_checker():
@@ -646,6 +664,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
