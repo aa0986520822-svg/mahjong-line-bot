@@ -356,55 +356,57 @@ def handle_message(event):
 
         user_state[user_id]["amount"] = amount
 
-        items = [
-            QuickReplyButton(action=MessageAction(label="1人", text="人數:1")),
-            QuickReplyButton(action=MessageAction(label="2人", text="人數:2")),
-            QuickReplyButton(action=MessageAction(label="3人", text="人數:3")),
-            QuickReplyButton(action=MessageAction(label="4人", text="人數:4")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+                items = [
+            QuickReplyButton(action=MessageAction(label="1人", text="人數:1"))),
+            QuickReplyButton(action=MessageAction(label="2人", text="人數:2"))),
+            QuickReplyButton(action=MessageAction(label="3人", text="人數:3"))),
+            QuickReplyButton(action=MessageAction(label="4人", text="人數:4"))),
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))),
         ]
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=items)))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=items))
+        )
         return
 
     # ===== 人數 =====
     # ===== 選擇人數加入配桌 =====
-if text.startswith("人數:"):
-    try:
-        people = int(text.split(":", 1)[1])
-    except:
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+    if text.startswith("人數:"):
+        try:
+            people = int(text.split(":", 1)[1])
+        except:
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+            return
+
+        data = user_state.get(user_id)
+
+        if not data:
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+            return
+
+        shop_id = data.get("shop_id")
+        amount = data.get("amount")
+
+        if not shop_id or not amount:
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+            return
+
+        db.execute("""
+            INSERT OR REPLACE INTO match_users 
+            (user_id, people, shop_id, amount, status, expire, table_id, table_index)
+            VALUES (?, ?, ?, ?, 'waiting', NULL, NULL, NULL)
+        """, (user_id, people, shop_id, amount))
+
+        db.commit()
+
+        try_make_table(shop_id, amount)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
+        )
         return
-
-    data = user_state.get(user_id)
-
-    if not data:
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
-
-    shop_id = data.get("shop_id")
-    amount = data.get("amount")
-
-    if not shop_id or not amount:
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
-
-    db.execute("""
-        INSERT OR REPLACE INTO match_users 
-        (user_id, people, shop_id, amount, status, expire, table_id, table_index)
-        VALUES (?, ?, ?, ?, 'waiting', NULL, NULL, NULL)
-    """, (user_id, people, shop_id, amount))
-
-    db.commit()
-
-    try_make_table(shop_id, amount)
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
-    )
-    return
 
 
     # ===== 加入 =====
@@ -673,6 +675,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
