@@ -469,24 +469,23 @@ text = event.message.text.strip()
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage(f"✅ 已加入 {price}\n目前 {total}/4", quick_reply=back_menu()))
 
- if total >= 4:
-                      users = db.execute(
-                "SELECT user_id FROM match_users WHERE price=? AND shop_id IS ?",
-                (price, shop_id)
-            ).fetchall()
+if total >= 4:
+    users = db.execute(
+        "SELECT user_id FROM match_users WHERE price=? AND shop_id IS ?",
+        (price, shop_id)
+    ).fetchall()
 
-            group = get_group_link(shop_id)
+    group = get_group_link(shop_id)
 
-            for (u,) in users:
-                line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{group}"))
+    for (u,) in users:
+        line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{group}"))
 
-            if shop_id:
-                line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{group}"))
+    if shop_id:
+        line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{group}"))
 
+    db.execute("DELETE FROM match_users WHERE price=? AND shop_id IS ?", (price, shop_id))
+    db.commit()
 
-            db.execute("DELETE FROM match_users WHERE price=? AND shop_id IS ?", (price,shop_id))
-            db.commit()
-        return
 
     # ===== 查看 / 取消 =====
 
@@ -511,7 +510,7 @@ text = event.message.text.strip()
 
         if not shop:
             user_state[user_id] = "register_shop"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入麻將館名稱"))
+line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入麻將館名稱"))
             return
 
         if shop[3] == 0:
@@ -536,7 +535,7 @@ text = event.message.text.strip()
         return
 
     if user_state.get(user_id) == "register_shop":
-        db.execute("INSERT INTO shops VALUES(?,?,?,?)",(user_id,text,0,0))
+       db.execute("INSERT INTO shops VALUES(?,?,?,?,?)",(user_id,text,0,0,None))
         db.commit()
         user_state[user_id] = None
 
@@ -549,11 +548,6 @@ text = event.message.text.strip()
             ))
         return
 
-        if text == "設定群組":
-        user_state[user_id] = "set_group"
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請貼上 LINE 群組邀請連結"))
-        return
 
 
     if text == "開始營業":
@@ -564,10 +558,6 @@ text = event.message.text.strip()
         return
 
 
-        db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
-        db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🟢 已開始營業", quick_reply=back_menu()))
-        return
 
     if text == "今日休息":
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (user_id,))
@@ -657,6 +647,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
