@@ -405,58 +405,137 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("已放棄，系統補位中", quick_reply=back_menu()))
         return
-        
-    # ===== 店家管理 (ADMIN) =====
+    # ===== 店家後台 =====
 
-    if text == "店家管理" and user_id in ADMIN_IDS:
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            "🛠 店家管理",
-            quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="➕ 新增店家", text="新增店家")),
-                QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
-                QuickReplyButton(action=MessageAction(label="🔁 開關店家", text="開關店家")),
-                QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
-                QuickReplyButton(action=MessageAction(label="🗑 刪除店家", text="刪除店家")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
-            ])
-        ))
-        return
+    if text == "店家後台":
+        shop = db.execute("SELECT * FROM shops WHERE shop_id=?", (user_id,)).fetchone()
 
-
-    if text == "新增店家" and user_id in ADMIN_IDS:
-        user_state[user_id] = "add_shop"
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請輸入：店家ID 店名\n例如：A01 麻將館", quick_reply=back_menu()))
-        return
-
-
-    if user_state.get(user_id) == "add_shop" and user_id in ADMIN_IDS:
-        try:
-            sid, name = text.split(" ",1)
-        except:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("格式錯誤，例如：A01 麻將館", quick_reply=back_menu()))
+        if not shop:
+            user_state[user_id] = "register_shop"
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("🏪 請輸入你的店家名稱", quick_reply=back_menu())
+            )
             return
 
-        db.execute("INSERT INTO shops VALUES(?,?,?,?,?)",
-                   (sid,name,1,1,SYSTEM_GROUP_LINK))
+        status = "營業中" if shop[2] else "休息中"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                f"🏪 {shop[1]}\n目前狀態：{status}",
+                quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
+                    QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
+                    QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
+                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+                ])
+            )
+        )
+        return
+    if user_state.get(user_id) == "register_shop":
+        db.execute(
+            "INSERT INTO shops VALUES(?,?,?,?,?)",
+            (user_id, text, 0, 1, None)
+        )
         db.commit()
-        user_state[user_id] = None
+
+        user_state.pop(user_id, None)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 店家建立完成", quick_reply=back_menu())
+        )
+        return
+    if text == "開始營業":
+        db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
+        db.commit()
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🟢 已開始營業", quick_reply=back_menu()))
+        return
+
+
+    if text == "今日休息":
+        db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (user_id,))
+        db.commit()
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🔴 今日休息", quick_reply=back_menu()))
+        return
+    if text == "設定群組":
+        user_state[user_id] = "shop_set_group"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu())
+        )
+        return
+
+
+    if user_state.get(user_id) == "shop_set_group":
+        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
+        db.commit()
+        user_state.pop(user_id, None)
 
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 店家已新增", quick_reply=back_menu()))
+            TextSendMessage("✅ 群組連結已設定", quick_reply=back_menu()))
+        return
+
+        
+        # ===== 店家管理 ADMIN =====
+
+    if text == "店家管理" and user_id in ADMIN_IDS:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                "🛠 店家管理",
+                quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
+                    QuickReplyButton(action=MessageAction(label="🗑 刪除店家", text="刪除店家")),
+                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+                ])
+            )
+        )
         return
 
 
     if text == "查看店家" and user_id in ADMIN_IDS:
-        rows = db.execute("SELECT shop_id,name,open,approved FROM shops").fetchall()
+        rows = db.execute("SELECT shop_id,name,open FROM shops").fetchall()
         msg = "📋 店家列表\n\n"
-        for r in rows:
-            msg += f"{r[0]} {r[1]} | {'開' if r[2] else '關'}\n"
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage(msg, quick_reply=back_menu()))
+        for r in rows:
+            msg += f"{r[0]} | {r[1]} | {'營業' if r[2] else '休息'}\n"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu())
+        )
         return
+        
+    if text == "刪除店家" and user_id in ADMIN_IDS:
+        rows = db.execute("SELECT shop_id,name FROM shops").fetchall()
+        items = [
+            QuickReplyButton(action=MessageAction(label=f"🗑 {n}", text=f"admin_del:{i}"))
+            for i,n in rows
+        ]
+        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("選擇要刪除的店家", quick_reply=QuickReply(items=items))
+        )
+        return
+
+
+    if text.startswith("admin_del:") and user_id in ADMIN_IDS:
+        sid = text.split(":")[1]
+        db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
+        db.commit()
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🗑 已刪除", quick_reply=back_menu())
+        )
+        return
+
 
 
     if text == "開關店家" and user_id in ADMIN_IDS:
@@ -542,3 +621,4 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
