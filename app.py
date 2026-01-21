@@ -511,20 +511,19 @@ def handle_message(event):
             TextSendMessage(f"✅ 已加入 {price}\n目前 {total}/4", quick_reply=back_menu()))
 
  if total >= 4:
-            users = db.execute(
+                      users = db.execute(
                 "SELECT user_id FROM match_users WHERE price=? AND shop_id IS ?",
-                (price,shop_id)
+                (price, shop_id)
             ).fetchall()
 
             group = get_group_link(shop_id)
 
-  if shop_id:
-            line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{group}"))
-
-
+            for (u,) in users:
+                line_bot_api.push_message(u, TextSendMessage(f"🎉 成桌成功\n{group}"))
 
             if shop_id:
-                line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{GROUP_LINK}"))
+                line_bot_api.push_message(shop_id, TextSendMessage(f"🎉 玩家已成桌\n{group}"))
+
 
             db.execute("DELETE FROM match_users WHERE price=? AND shop_id IS ?", (price,shop_id))
             db.commit()
@@ -563,15 +562,18 @@ def handle_message(event):
 
         status = "營業中" if shop[2] else "休息中"
 
-        line_bot_api.reply_message(event.reply_token,
-    TextSendMessage(f"🏪 {shop[1]}\n目前狀態：{status}", quick_reply=QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
-        QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
-        QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
-        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
-    ])))
-
-            ])))
+              line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                f"🏪 {shop[1]}\n目前狀態：{status}",
+                quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
+                    QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
+                    QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
+                    QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+                ])
+            )
+        )
         return
 
     if user_state.get(user_id) == "register_shop":
@@ -588,12 +590,20 @@ def handle_message(event):
             ))
         return
 
-    if text == "開始營業":
         if text == "設定群組":
         user_state[user_id] = "set_group"
         line_bot_api.reply_message(event.reply_token,
-        TextSendMessage("請貼上 LINE 群組邀請連結"))
-    return
+            TextSendMessage("請貼上 LINE 群組邀請連結"))
+        return
+
+
+    if text == "開始營業":
+        db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
+        db.commit()
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🟢 已開始營業", quick_reply=back_menu()))
+        return
+
 
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (user_id,))
         db.commit()
@@ -688,6 +698,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
