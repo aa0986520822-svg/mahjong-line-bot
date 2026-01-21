@@ -370,7 +370,10 @@ def handle_message(event):
         return
 
     if text == "設定群組":
-        print("DEBUG USER_ID =>", user_id)
+       line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(f"你的 USER_ID 是:\n{user_id}")
+
         user_state[user_id] = "shop_set_group"
         line_bot_api.reply_message(
             event.reply_token,
@@ -417,6 +420,7 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
