@@ -21,6 +21,8 @@ ADMIN_IDS = {
 
 DB_PATH = "data.db"
 user_state = {}
+COUNTDOWN = 60
+
 
 # ================= DB =================
 
@@ -39,6 +41,7 @@ def close_db(e=None):
 
 def init_db():
     db = get_db()
+
     db.execute("""CREATE TABLE IF NOT EXISTS shops(
         shop_id TEXT,
         name TEXT,
@@ -53,7 +56,121 @@ def init_db():
         time TEXT
     )""")
 
+    db.execute("""CREATE TABLE IF NOT EXISTS match_users(
+        user_id TEXT,
+        people INT,
+        shop_id TEXT,
+        status TEXT,
+        expire REAL,
+        table_no TEXT
+    )""")
+
+    db.execute("""CREATE TABLE IF NOT EXISTS tables(
+        id TEXT,
+        shop_id TEXT
+    )""")
+
     db.commit()
+
+
+# ================= 配桌 =================
+
+def get_group_link(shop_id):
+    db = get_db()
+    row = db.execute("SELECT group_link FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+    return row[0] if row and row[0] else SYSTEM_GROUP_LINK
+
+
+def try_make_table(shop_id):
+    db = get_db()
+
+    rows = db.execute("""
+        SELECT user_id,people FROM match_users 
+        WHERE shop_id=? AND status='waiting'
+        ORDER BY rowid
+    """, (shop_id,)).fetchall()
+
+    total = 0
+    selected = []
+
+    for u,p in rows:
+        total += p
+        selected.append(u)
+        if total >= 4:
+            break
+
+    if total < 4:
+        return
+
+    table_no = f"{shop_id}_{int(time.time())}"
+    expire = time.time() + COUNTDOWN
+
+    db.execute("INSERT INTO tables VALUES(?,?)", (table_no,shop_id))
+
+    for u in selected:
+        db.execute("""
+            UPDATE match_users 
+            SET status='ready', expire=?, table_no=? 
+            WHERE user_id=?
+        """, (expire,table_no,u))
+
+    db.commit()
+
+    for u in selected:
+        line_bot_api.push_message(u, TextSendMessage(
+            f"🎉 成桌完成\n🪑 桌號 {table_no}\n⏱ {COUNTDOWN} 秒內確認",
+            quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+                QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+            ])
+        ))
+
+
+def check_confirm(table_no):
+    db = get_db()
+
+    rows = db.execute("""
+        SELECT user_id FROM match_users 
+        WHERE table_no=? AND status='confirmed'
+    """, (table_no,)).fetchall()
+
+    if len(rows) < 4:
+        return
+
+    row = db.execute("SELECT shop_id FROM tables WHERE id=?", (table_no,)).fetchone()
+    shop_id = row[0] if row else None
+    group = get_group_link(shop_id)
+
+    for (u,) in rows:
+        line_bot_api.push_message(u, TextSendMessage(
+            f"🎉 成桌成功\n🪑 桌號 {table_no}\n\n🔗 {group}"
+        ))
+
+    db.execute("DELETE FROM match_users WHERE table_no=?", (table_no,))
+    db.execute("DELETE FROM tables WHERE id=?", (table_no,))
+    db.commit()
+
+
+def release_timeout():
+    while True:
+        time.sleep(5)
+        db = sqlite3.connect(DB_PATH, check_same_thread=False)
+        now = time.time()
+
+        rows = db.execute("""
+            SELECT user_id,shop_id,table_no FROM match_users
+            WHERE status='ready' AND expire < ?
+        """, (now,)).fetchall()
+
+        for u,shop_id,table_no in rows:
+            db.execute("DELETE FROM match_users WHERE user_id=?", (u,))
+            db.execute("""
+                UPDATE match_users 
+                SET status='waiting', expire=NULL, table_no=NULL
+                WHERE table_no=?
+            """,(table_no,))
+            db.commit()
+            try_make_table(shop_id)
 
 
 # ================= MENU =================
@@ -104,7 +221,91 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
 
-    # ===== 管理員 =====
+    # ===== 加入 / 放棄 =====
+
+    if text == "加入":
+        row = db.execute("SELECT table_no FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
+            db.commit()
+            check_confirm(row[0])
+        return
+
+    if text == "放棄":
+        row = db.execute("SELECT shop_id,table_no FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            shop_id,table_no = row
+            db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+            db.execute("""
+                UPDATE match_users 
+                SET status='waiting', expire=NULL, table_no=NULL 
+                WHERE table_no=?
+            """,(table_no,))
+            db.commit()
+            try_make_table(shop_id)
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("已放棄，系統補位中", quick_reply=back_menu()))
+        return
+
+    # ===== 指定店家 =====
+
+    if text == "指定店家":
+        shops = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
+
+        if not shops:
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("目前沒有上線店家", quick_reply=back_menu()))
+            return
+
+        items = [QuickReplyButton(action=MessageAction(label=f"🏪 {n}", text=f"進入:{i}")) for i, n in shops]
+        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
+        return
+
+    if text.startswith("進入:"):
+        sid = text.split(":")[1]
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇功能", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="🎲 我要配桌", text=f"配桌:{sid}")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            ])))
+        return
+
+    if text.startswith("配桌:"):
+        sid = text.split(":")[1]
+        user_state[user_id] = sid
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="我1人", text="我1人")),
+                QuickReplyButton(action=MessageAction(label="我2人", text="我2人")),
+                QuickReplyButton(action=MessageAction(label="我3人", text="我3人")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            ])))
+        return
+
+    if text in ["我1人","我2人","我3人"] and user_id in user_state:
+        sid = user_state[user_id]
+        people = int(text[1])
+
+        db.execute("INSERT INTO match_users VALUES(?,?,?,?,?,?)",
+            (user_id,people,sid,"waiting",None,None))
+        db.commit()
+
+        total = db.execute("""
+            SELECT SUM(people) FROM match_users 
+            WHERE shop_id=? AND status='waiting'
+        """,(sid,)).fetchone()[0] or 0
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage(f"✅ 已加入配桌\n目前 {total}/4", quick_reply=back_menu()))
+
+        try_make_table(sid)
+        return
+
+        # ===== 管理員 =====
 
     if user_id in ADMIN_IDS and text == "店家管理":
         rows = db.execute("SELECT shop_id,name,open,approved FROM shops").fetchall()
@@ -133,20 +334,23 @@ def handle_message(event):
         sid = text.split(":")[1]
         db.execute("UPDATE shops SET approved=1 WHERE shop_id=?", (sid,))
         db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已核准", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 已核准", quick_reply=back_menu()))
         return
 
     if user_id in ADMIN_IDS and text.startswith("停用:"):
         sid = text.split(":")[1]
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
         db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("⛔ 已停用", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("⛔ 已停用", quick_reply=back_menu()))
         return
 
     if user_id in ADMIN_IDS and text.startswith("群組:"):
         sid = text.split(":")[1]
         user_state[user_id] = f"admin_set_group:{sid}"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入新的群組連結"))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請輸入新的群組連結"))
         return
 
     if user_state.get(user_id, "").startswith("admin_set_group"):
@@ -154,44 +358,18 @@ def handle_message(event):
         db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
         db.commit()
         user_state[user_id] = None
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已更新群組", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 已更新群組", quick_reply=back_menu()))
         return
 
     if user_id in ADMIN_IDS and text.startswith("刪除:"):
         sid = text.split(":")[1]
         db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
         db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🗑 已刪除", quick_reply=back_menu()))
-        return
-
-    # ===== 指定店家 =====
-
-    if text == "指定店家":
-        shops = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
-
-        if not shops:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("目前沒有上線店家", quick_reply=back_menu()))
-            return
-
-        items = [QuickReplyButton(action=MessageAction(label=f"🏪 {n}", text=f"進入:{i}")) for i, n in shops]
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
-
         line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
+            TextSendMessage("🗑 已刪除", quick_reply=back_menu()))
         return
 
-    if text.startswith("進入:"):
-        sid = text.split(":")[1]
-        row = db.execute("SELECT group_link,name FROM shops WHERE shop_id=?", (sid,)).fetchone()
-
-        if not row or not row[0]:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("此店尚未設定群組"))
-            return
-
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage(f"🏪 {row[1]}\n\n🔗 {row[0]}", quick_reply=back_menu()))
-        return
 
     # ===== 店家後台 =====
 
@@ -200,7 +378,8 @@ def handle_message(event):
 
         if not shop:
             user_state[user_id] = "register_shop"
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入麻將館名稱"))
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("請輸入麻將館名稱"))
             return
 
         if shop[3] == 0:
@@ -224,7 +403,8 @@ def handle_message(event):
         return
 
     if user_state.get(user_id) == "register_shop":
-        db.execute("INSERT INTO shops VALUES(?,?,?,?,?)", (user_id, text, 0, 0, None))
+        db.execute("INSERT INTO shops VALUES(?,?,?,?,?)",
+            (user_id, text, 0, 0, None))
         db.commit()
         user_state[user_id] = None
 
@@ -247,8 +427,10 @@ def handle_message(event):
     if text == "今日休息":
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (user_id,))
         db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🔴 今日休息", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🔴 今日休息", quick_reply=back_menu()))
         return
+
 
     # ===== 記事本 =====
 
@@ -265,23 +447,26 @@ def handle_message(event):
 
     if text == "新增紀錄":
         user_state[user_id] = "add_money"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入金額 (+ / -)"))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請輸入金額 (+ / -)"))
         return
 
     if user_state.get(user_id) == "add_money":
         try:
             amt = int(text)
         except:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請輸入正確數字"))
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("請輸入正確數字"))
             return
 
         now = datetime.now()
         db.execute("INSERT INTO ledger VALUES(?,?,?)",
             (user_id, amt, now.strftime("%Y-%m-%d %H:%M:%S")))
-
         db.commit()
+
         user_state[user_id] = None
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已紀錄", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 已紀錄", quick_reply=back_menu()))
         return
 
     if text == "查看當月":
@@ -292,12 +477,13 @@ def handle_message(event):
         ).fetchall()
 
         msg = "📅 本月紀錄\n\n"
-        for a, t in rows:
+        for a,t in rows:
             msg += f"{t} : {a}\n"
         if not rows:
             msg += "尚無紀錄"
 
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu()))
         return
 
     if text == "查看上月":
@@ -308,19 +494,22 @@ def handle_message(event):
         ).fetchall()
 
         msg = "⏪ 上月紀錄\n\n"
-        for a, t in rows:
+        for a,t in rows:
             msg += f"{t} : {a}\n"
         if not rows:
             msg += "尚無紀錄"
 
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu()))
         return
 
     if text == "清除紀錄":
         db.execute("DELETE FROM ledger WHERE user_id=?", (user_id,))
         db.commit()
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("🧹 已清除", quick_reply=back_menu()))
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🧹 已清除", quick_reply=back_menu()))
         return
+
 
 
 # ================= RUN =================
@@ -331,5 +520,6 @@ def health():
 
 
 if __name__ == "__main__":
+    threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
