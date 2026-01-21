@@ -191,9 +191,9 @@ def main_menu(user_id=None):
 
 
 def back_menu():
-    return QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])
-
-
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+    ])
 # ================= WEBHOOK =================
 
 @app.route("/callback", methods=["POST"])
@@ -210,6 +210,8 @@ def callback():
 @handler.add(FollowEvent)
 def handle_follow(event):
     line_bot_api.reply_message(event.reply_token, main_menu(event.source.user_id))
+
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
@@ -217,19 +219,17 @@ def handle_message(event):
 
     user_id = event.source.user_id
     text = event.message.text.strip()
-    if cmd == "userid":
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(f"你的 USER ID 是：\n{user_id}", quick_reply=back_menu())
-    )
-    return
 
-    
+    if text == "userid":
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(f"你的 USER ID 是：\n{user_id}", quick_reply=back_menu())
+        )
+        return
+
     if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
-
-    # ===== 加入 / 放棄 =====
 
     if text == "加入":
         row = db.execute("SELECT table_no FROM match_users WHERE user_id=?", (user_id,)).fetchone()
@@ -255,8 +255,6 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("已放棄，系統補位中", quick_reply=back_menu()))
         return
-
-    # ===== 指定店家 =====
 
     if text == "指定店家":
         shops = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
@@ -313,8 +311,6 @@ def handle_message(event):
         try_make_table(sid)
         return
 
-    # ===== 店家後台 =====
-
     if text == "店家後台":
         shop = db.execute("SELECT * FROM shops WHERE shop_id=?", (user_id,)).fetchone()
 
@@ -370,17 +366,12 @@ def handle_message(event):
         return
 
     if text == "設定群組":
-       line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(f"你的 USER_ID 是:\n{user_id}")
-
         user_state[user_id] = "shop_set_group"
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply_back_menu())
+            TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu())
         )
-    return
-
+        return
 
     if user_state.get(user_id) == "shop_set_group":
         db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
@@ -390,20 +381,6 @@ def handle_message(event):
             TextSendMessage("✅ 群組連結已設定完成", quick_reply=back_menu()))
         return
 
-    # ===== 記事本 =====
-
-    if text == "記事本":
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("📒 記事本", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="➕ 新增紀錄", text="新增紀錄")),
-                QuickReplyButton(action=MessageAction(label="📅 查看當月", text="查看當月")),
-                QuickReplyButton(action=MessageAction(label="⏪ 查看上月", text="查看上月")),
-                QuickReplyButton(action=MessageAction(label="🧹 清除紀錄", text="清除紀錄")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
-            ])))
-        return
-
-    # fallback
     line_bot_api.reply_message(event.reply_token, main_menu(user_id))
 
 
@@ -420,10 +397,3 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
-
-
-
-
-
-
-
