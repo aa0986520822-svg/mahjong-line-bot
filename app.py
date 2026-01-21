@@ -370,10 +370,14 @@ def handle_message(event):
         return
 
     if text == "設定群組":
+        print("DEBUG USER_ID =>", user_id)
         user_state[user_id] = "shop_set_group"
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply=back_menu()))
-        return
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔗 請貼上 LINE 群組邀請連結", quick_reply_back_menu())
+        )
+    return
+
 
     if user_state.get(user_id) == "shop_set_group":
         db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
@@ -413,6 +417,7 @@ if __name__ == "__main__":
     threading.Thread(target=release_timeout, daemon=True).start()
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
