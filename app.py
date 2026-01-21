@@ -100,49 +100,7 @@ def get_group_link(shop_id):
 
     return SYSTEM_GROUP_LINK
 
-def get_group_link(shop_id):
-    db = get_db()
 
-    if shop_id:
-        row = db.execute(
-            "SELECT group_link FROM shops WHERE shop_id=?",
-            (shop_id,)
-        ).fetchone()
-
-        if row and row[0]:
-            return row[0]
-
-    return SYSTEM_GROUP_LINK
-
-
-def get_group_link(shop_id):
-    db = get_db()
-
-    if shop_id:
-        row = db.execute(
-            "SELECT group_link FROM shops WHERE shop_id=?",
-            (shop_id,)
-        ).fetchone()
-
-        if row and row[0]:
-            return row[0]
-
-    return SYSTEM_GROUP_LINK
-
-
-    def get_group_link(shop_id):
-    db = get_db()
-
-    if shop_id:
-        row = db.execute(
-            "SELECT group_link FROM shops WHERE shop_id=?",
-            (shop_id,)
-        ).fetchone()
-
-     if row and row[0]:
-            return row[0]
-
-    return SYSTEM_GROUP_LINK
 
 
 # ================= 倒數釋放 =================
@@ -281,30 +239,31 @@ def callback():
 def handle_message(event):
     init_db()
     db = get_db()
-    user_id = event.source.user_id
-        text = event.message.text.strip()
+   user_id = event.source.user_id
+text = event.message.text.strip()
 
-    if event.source.type == "group":
-        if text.lower() in ["群id", "groupid", "群組id"]:
-            gid = event.source.group_id
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(f"📌 群組ID：\n{gid}")
-            )
-            return
-
-            )
-            return
-      if user_state.get(user_id) == "set_group":
-        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, user_id))
-        db.commit()
-        user_state[user_id] = None
-
+   if event.source.type == "group":
+    if text.lower() in ["群id", "groupid", "群組id"]:
+        gid = event.source.group_id
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("✅ 群組連結已更新", quick_reply=back_menu())
+            TextSendMessage(f"📌 群組ID：\n{gid}")
         )
         return
+
+     if user_state.get(user_id, "").startswith("admin_set_group"):
+    sid = user_state[user_id].split(":")[1]
+    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
+    db.commit()
+    user_state[user_id] = None
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("✅ 已更新群組", quick_reply=back_menu())
+    )
+    return
+
+
 
 
 
@@ -698,6 +657,7 @@ def health():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
 
 
 
