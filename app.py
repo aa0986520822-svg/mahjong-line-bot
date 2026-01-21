@@ -426,17 +426,17 @@ def handle_message(event):
         return
 
     # ===== 新增紀錄 =====
-    if text == "新增紀錄":
-        user_state[user_id] = {"mode": "note_amount"}
+if text == "新增紀錄":
+    user_state[user_id] = {"mode": "note_amount"}
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
-        )
-        return
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+    )
+    return
 
-    # ===== 記事本只輸入金額 =====
 
+# ===== 記事本只輸入金額 =====
 if user_state.get(user_id, {}).get("mode") == "note_amount":
 
     val = text.strip()
@@ -457,17 +457,15 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
 
     db.commit()
 
-    # ✅ 清狀態
+    # 清狀態
     user_state.pop(user_id, None)
 
-    # ✅ 回主選單
+    # 回主選單
     line_bot_api.reply_message(
         event.reply_token,
         main_menu(user_id)
     )
     return
-
-
 
 # ================= TIMEOUT 檢查 =================
 
@@ -670,6 +668,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
