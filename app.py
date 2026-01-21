@@ -1,4 +1,4 @@
-import os, sqlite3
+import os, sqlite3, threading, time
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, g
 from linebot import LineBotApi, WebhookHandler
@@ -23,12 +23,16 @@ DB_PATH = "data.db"
 user_state = {}
 shop_match_state = {}
 
+COUNTDOWN = 30
+
+
 # ================= DB =================
 
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
+        g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
     return g.db
+
 
 @app.teardown_appcontext
 def close_db(e=None):
@@ -36,26 +40,141 @@ def close_db(e=None):
     if db:
         db.close()
 
+
 def init_db():
     db = get_db()
     db.execute("""CREATE TABLE IF NOT EXISTS match_users(
         user_id TEXT,
         price TEXT,
         people INT,
-        shop_id TEXT
+        shop_id TEXT,
+        status TEXT,
+        expire TEXT,
+        table_no INT
     )""")
+
     db.execute("""CREATE TABLE IF NOT EXISTS shops(
         shop_id TEXT,
         name TEXT,
         open INT,
         approved INT
     )""")
+
     db.execute("""CREATE TABLE IF NOT EXISTS ledger(
         user_id TEXT,
         amount INT,
         time TEXT
     )""")
+
+    db.execute("""CREATE TABLE IF NOT EXISTS tables(
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        price TEXT,
+        shop_id TEXT,
+        created TEXT
+    )""")
+
     db.commit()
+
+
+def create_table_no(price, shop_id):
+    db = get_db()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute("INSERT INTO tables(price,shop_id,created) VALUES(?,?,?)",
+               (price, shop_id, now))
+    db.commit()
+    return db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+
+# ================= 倒數釋放 =================
+
+def release_timeout():
+    while True:
+        time.sleep(5)
+        db = sqlite3.connect(DB_PATH)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        rows = db.execute("""
+            SELECT user_id FROM match_users
+            WHERE status='ready' AND expire < ?
+        """, (now,)).fetchall()
+
+        for (u,) in rows:
+            db.execute("DELETE FROM match_users WHERE user_id=?", (u,))
+            try:
+                line_bot_api.push_message(u, TextSendMessage("⏱ 超時未加入，已自動釋放"))
+            except:
+                pass
+
+        db.commit()
+        db.close()
+
+
+threading.Thread(target=release_timeout, daemon=True).start()
+
+
+# ================= 配桌邏輯 =================
+
+def try_make_table(price, shop_id):
+    db = get_db()
+
+    rows = db.execute("""
+        SELECT rowid,user_id,people 
+        FROM match_users 
+        WHERE price=? AND shop_id IS ? AND status='waiting'
+        ORDER BY rowid
+    """, (price, shop_id)).fetchall()
+
+    pool = []
+    total = 0
+
+    for r in rows:
+        pool.append(r)
+        total += r[2]
+        if total >= 4:
+            break
+
+    if total < 4:
+        return
+
+    table_no = create_table_no(price, shop_id)
+    expire = (datetime.now() + timedelta(seconds=COUNTDOWN)).strftime("%Y-%m-%d %H:%M:%S")
+
+    for rowid, uid, _ in pool:
+        db.execute("""
+            UPDATE match_users 
+            SET status='ready',expire=?,table_no=? 
+            WHERE rowid=?
+        """, (expire, table_no, rowid))
+
+        line_bot_api.push_message(uid, TextSendMessage(
+            f"🎉 成桌完成\n🪑 桌號 {table_no}\n⏱ {COUNTDOWN} 秒內確認",
+            quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+                QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+            ])
+        ))
+
+    db.commit()
+
+
+def check_confirm(table_no):
+    db = get_db()
+    rows = db.execute("""
+        SELECT user_id FROM match_users 
+        WHERE table_no=? AND status='confirmed'
+    """, (table_no,)).fetchall()
+
+    if len(rows) < 4:
+        return
+
+    for (u,) in rows:
+        line_bot_api.push_message(u, TextSendMessage(
+            f"🎉 成桌成功\n🪑 桌號 {table_no}\n{GROUP_LINK}"
+        ))
+
+    db.execute("DELETE FROM match_users WHERE table_no=?", (table_no,))
+    db.commit()
+
 
 # ================= MENU =================
 
@@ -70,8 +189,10 @@ def main_menu(user_id=None):
         items.append(QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理")))
     return TextSendMessage("請選擇功能", quick_reply=QuickReply(items=items))
 
+
 def back_menu():
     return QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])
+
 
 # ================= WEBHOOK =================
 
@@ -85,6 +206,7 @@ def callback():
         abort(400)
     return "OK"
 
+
 # ================= MESSAGE =================
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -94,17 +216,28 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # ===== 主選單 =====
-
-    if text in ["選單","menu"]:
+    if text in ["選單", "menu"]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
 
     # ===== 成桌確認 =====
-
     if text == "加入":
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已加入成功"))
+        db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
+        db.commit()
+
+        row = db.execute("SELECT table_no FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            check_confirm(row[0])
+
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已加入，等待其他人"))
         return
+
+    if text == "放棄":
+        db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+        db.commit()
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("已放棄配桌", quick_reply=back_menu()))
+        return
+
 
     # ===== 管理員 =====
 
@@ -406,3 +539,4 @@ def handle_message(event):
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
