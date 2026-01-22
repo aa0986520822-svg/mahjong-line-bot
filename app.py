@@ -479,7 +479,7 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
 
 
 # ===== 查看當月 =====
-    if text == "查看當月":
+if text == "查看當月":
     today = datetime.now()
     month_start = today.strftime("%Y-%m-01")
 
@@ -509,11 +509,11 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
         event.reply_token,
         TextSendMessage(msg, quick_reply=back_menu())
     )
-        return
+    return
 
 
 # ===== 查看上月 =====
-    if text == "查看上月":
+if text == "查看上月":
     today = datetime.now()
     first = today.replace(day=1)
     last_month_end = first - timedelta(days=1)
@@ -549,11 +549,27 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
         event.reply_token,
         TextSendMessage(msg, quick_reply=back_menu())
     )
+    return
+
+
+    total = 0
+    msg = "⏪ 上月紀錄\n\n"
+
+    for amt, t in rows:
+        total += amt
+        msg += f"{t}｜{amt:+}\n"
+
+    msg += f"\n💰 合計：{total:+}"
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(msg, quick_reply=back_menu())
+    )
         return
 
 
 # ===== 清除紀錄 =====
-    if text == "清除紀錄":
+if text == "清除紀錄":
     db.execute("DELETE FROM notes WHERE user_id=?", (user_id,))
     db.commit()
 
@@ -561,7 +577,7 @@ if user_state.get(user_id, {}).get("mode") == "note_amount":
         event.reply_token,
         TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
     )
-        return
+    return
 
 
 
@@ -766,6 +782,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
