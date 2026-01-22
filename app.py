@@ -171,6 +171,7 @@ def push_table(table_id, title="🀄 桌況更新"):
         except Exception as e:
             print("push error:", e)
 
+
 def try_make_table(shop_id, amount):
     db = get_db()
 
@@ -361,11 +362,14 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items)))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items))
+        )
         return
 
-       # ===== 金額 =====
+
+    # ===== 金額 =====
     if text.startswith("金額:"):
         amount = text.split(":", 1)[1]
 
@@ -391,7 +395,6 @@ def handle_message(event):
 
 
     # ===== 人數 =====
-    # ===== 選擇人數加入配桌 =====
     if text.startswith("人數:"):
         try:
             people = int(text.split(":", 1)[1])
@@ -422,6 +425,11 @@ def handle_message(event):
 
         try_make_table(shop_id, amount)
 
+        # ✅ 有桌才推播
+        row = db.execute("SELECT table_id FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if row and row[0]:
+            push_table(row[0], "👤 有玩家加入桌子")
+
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
@@ -441,11 +449,16 @@ def handle_message(event):
         db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
         db.commit()
 
+        push_table(table_id, "✅ 有玩家確認加入")
+
         check_confirm(table_id)
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已確認加入", quick_reply=back_menu())
+        )
         return
+
 
     # ===== 放棄 =====
     if text == "放棄":
@@ -453,13 +466,24 @@ def handle_message(event):
 
         if row:
             shop_id, amount, table_id = row
+
             db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
-            db.execute("UPDATE match_users SET status='waiting',expire=NULL,table_id=NULL,table_index=NULL WHERE table_id=?", (table_id,))
+            db.execute("""
+                UPDATE match_users 
+                SET status='waiting',expire=NULL,table_id=NULL,table_index=NULL 
+                WHERE table_id=?
+            """, (table_id,))
             db.commit()
+
+            if table_id:
+                push_table(table_id, "❌ 有玩家離開桌子")
+
             try_make_table(shop_id, amount)
 
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("❌ 已放棄配桌", quick_reply=back_menu()))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("❌ 已放棄配桌", quick_reply=back_menu())
+        )
         return
 
    
@@ -819,6 +843,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
