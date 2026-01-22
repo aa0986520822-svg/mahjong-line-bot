@@ -299,12 +299,10 @@ def handle_message(event):
         "指定店家","記事本","店家後台","店家管理",
         "新增紀錄","查看當月","查看上月","清除紀錄",
         "開始營業","今日休息","設定群組",
-        "我1人","我2人","我3人",
         "加入","放棄","取消配桌","選單"
     ]:
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
-
 
     # ===== 指定店家 =====
     if text == "指定店家":
@@ -317,10 +315,8 @@ def handle_message(event):
             )
             return
 
-        items = []
-        for sid, name in rows:
-            items.append(QuickReplyButton(action=MessageAction(label=name, text=f"店家:{sid}")))
-
+        items = [QuickReplyButton(action=MessageAction(label=name, text=f"店家:{sid}"))
+                 for sid, name in rows]
         items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
 
         line_bot_api.reply_message(
@@ -329,11 +325,9 @@ def handle_message(event):
         )
         return
 
-
     # ===== 選店 =====
     if text.startswith("店家:"):
         shop_id = text.split(":", 1)[1]
-
         user_state[user_id] = {"shop_id": shop_id}
 
         items = [
@@ -349,7 +343,6 @@ def handle_message(event):
             TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items))
         )
         return
-
 
     # ===== 金額 =====
     if text.startswith("金額:"):
@@ -375,7 +368,6 @@ def handle_message(event):
         )
         return
 
-
     # ===== 人數 =====
     if text.startswith("人數:"):
         try:
@@ -385,14 +377,12 @@ def handle_message(event):
             return
 
         data = user_state.get(user_id)
-
         if not data:
             line_bot_api.reply_message(event.reply_token, main_menu(user_id))
             return
 
         shop_id = data.get("shop_id")
         amount = data.get("amount")
-
         if not shop_id or not amount:
             line_bot_api.reply_message(event.reply_token, main_menu(user_id))
             return
@@ -402,12 +392,10 @@ def handle_message(event):
             (user_id, people, shop_id, amount, status, expire, table_id, table_index)
             VALUES (?, ?, ?, ?, 'waiting', NULL, NULL, NULL)
         """, (user_id, people, shop_id, amount))
-
         db.commit()
 
         try_make_table(shop_id, amount)
 
-        # ✅ 有桌才推播
         row = db.execute("SELECT table_id FROM match_users WHERE user_id=?", (user_id,)).fetchone()
         if row and row[0]:
             push_table(row[0], "👤 有玩家加入桌子")
@@ -417,7 +405,6 @@ def handle_message(event):
             TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
         )
         return
-
 
     # ===== 加入 =====
     if text == "加入":
@@ -432,7 +419,6 @@ def handle_message(event):
         db.commit()
 
         push_table(table_id, "✅ 有玩家確認加入")
-
         check_confirm(table_id)
 
         line_bot_api.reply_message(
@@ -440,7 +426,6 @@ def handle_message(event):
             TextSendMessage("✅ 已確認加入", quick_reply=back_menu())
         )
         return
-
 
     # ===== 放棄 =====
     if text == "放棄":
@@ -468,22 +453,9 @@ def handle_message(event):
         )
         return
 
-   
-     # ================= 記事本 =================
-
-
-# ===== 記事本選單 =====
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    init_db()
-    db = get_db()
-
-    user_id = event.source.user_id
-    text = event.message.text.strip()
-
-    # ===== 記事本選單 =====
+    # ===== 記事本 =====
     if text == "記事本":
-        user_state[user_id] = "note_menu"
+        user_state[user_id] = {"mode": "note_menu"}
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("📒 記事本", quick_reply=QuickReply(items=[
@@ -496,131 +468,117 @@ def handle_message(event):
         )
         return
 
-
-# ===== 新增紀錄 =====
-if text == "新增紀錄":
-    user_state[user_id] = {"mode": "note_amount"}
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
-    )
-    return
-
-
-# ===== 記事本輸入金額 =====
-if user_state.get(user_id, {}).get("mode") == "note_amount":
-    val = text.strip()
-
-    if not re.fullmatch(r"-?\d+", val):
+    if text == "新增紀錄":
+        user_state[user_id] = {"mode": "note_amount"}
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+            TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
         )
         return
 
-    amount = int(val)
+    if user_state.get(user_id, {}).get("mode") == "note_amount":
+        if not re.fullmatch(r"-?\d+", text):
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
+            )
+            return
 
-    db.execute(
-        "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
-        (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
-    )
-    db.commit()
+        amount = int(text)
+        db.execute(
+            "INSERT INTO notes (user_id, content, amount, time) VALUES (?,?,?,?)",
+            (user_id, "", amount, datetime.now().strftime("%Y-%m-%d"))
+        )
+        db.commit()
 
-    user_state.pop(user_id, None)
+        user_state.pop(user_id, None)
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(f"✅ 已新增：{amount:+}", quick_reply=back_menu())
-    )
-    return
-
-
-# ===== 查看當月 =====
-if text == "查看當月":
-    today = datetime.now()
-    month_start = today.strftime("%Y-%m-01")
-
-    rows = db.execute("""
-        SELECT amount, time FROM notes
-        WHERE user_id=? AND time >= ?
-        ORDER BY time DESC
-    """, (user_id, month_start)).fetchall()
-
-    if not rows:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("📅 本月尚無紀錄", quick_reply=back_menu())
+            TextSendMessage(f"✅ 已新增：{amount:+}", quick_reply=back_menu())
         )
         return
 
-    total = 0
-    msg = "📅 本月紀錄\n\n"
+    if text == "查看當月":
+        today = datetime.now()
+        month_start = today.strftime("%Y-%m-01")
 
-    for amt, t in rows:
-        total += amt
-        msg += f"{t}｜{amt:+}\n"
+        rows = db.execute("""
+            SELECT amount, time FROM notes
+            WHERE user_id=? AND time >= ?
+            ORDER BY time DESC
+        """, (user_id, month_start)).fetchall()
 
-    msg += f"\n💰 合計：{total:+}"
+        if not rows:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("📅 本月尚無紀錄", quick_reply=back_menu())
+            )
+            return
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(msg, quick_reply=back_menu())
-    )
-    return
+        total = 0
+        msg = "📅 本月紀錄\n\n"
 
+        for amt, t in rows:
+            total += amt
+            msg += f"{t}｜{amt:+}\n"
 
-# ===== 查看上月 =====
-if text == "查看上月":
-    today = datetime.now()
-    first = today.replace(day=1)
-    last_month_end = first - timedelta(days=1)
-    last_month_start = last_month_end.replace(day=1)
+        msg += f"\n💰 合計：{total:+}"
 
-    rows = db.execute("""
-        SELECT amount, time FROM notes
-        WHERE user_id=? AND time BETWEEN ? AND ?
-        ORDER BY time DESC
-    """, (
-        user_id,
-        last_month_start.strftime("%Y-%m-%d"),
-        last_month_end.strftime("%Y-%m-%d")
-    )).fetchall()
-
-    if not rows:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("⏪ 上月尚無紀錄", quick_reply=back_menu())
+            TextSendMessage(msg, quick_reply=back_menu())
         )
         return
 
-    total = 0
-    msg = "⏪ 上月紀錄\n\n"
+    if text == "查看上月":
+        today = datetime.now()
+        first = today.replace(day=1)
+        last_month_end = first - timedelta(days=1)
+        last_month_start = last_month_end.replace(day=1)
 
-    for amt, t in rows:
-    total += amt
-    msg += f"{t}｜{amt:+}\n"
+        rows = db.execute("""
+            SELECT amount, time FROM notes
+            WHERE user_id=? AND time BETWEEN ? AND ?
+            ORDER BY time DESC
+        """, (
+            user_id,
+            last_month_start.strftime("%Y-%m-%d"),
+            last_month_end.strftime("%Y-%m-%d")
+        )).fetchall()
 
-msg += f"\n💰 合計：{total:+}"
+        if not rows:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("⏪ 上月尚無紀錄", quick_reply=back_menu())
+            )
+            return
 
-line_bot_api.reply_message(
-    event.reply_token,
-    TextSendMessage(msg, quick_reply=back_menu())
-)
-    return
+        total = 0
+        msg = "⏪ 上月紀錄\n\n"
 
+        for amt, t in rows:
+            total += amt
+            msg += f"{t}｜{amt:+}\n"
 
+        msg += f"\n💰 合計：{total:+}"
 
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu())
+        )
+        return
 
-# ===== 清除紀錄 =====
-if text == "清除紀錄":
-    db.execute("DELETE FROM notes WHERE user_id=?", (user_id,))
-    db.commit()
+    if text == "清除紀錄":
+        db.execute("DELETE FROM notes WHERE user_id=?", (user_id,))
+        db.commit()
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
-    )
-    return
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
+        )
+        return
+
 
 
 
@@ -825,6 +783,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
