@@ -1,5 +1,4 @@
-import os, sqlite3, threading, time
-import re
+import os, sqlite3, threading, time, re
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, g
 from linebot import LineBotApi, WebhookHandler
@@ -27,12 +26,9 @@ COUNTDOWN_READY = 20
 
 
 def get_db():
-    try:
-        if "db" not in g:
-            g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
-        return g.db
-    except:
-        return sqlite3.connect(DB_PATH, check_same_thread=False)
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH, check_same_thread=False)
+    return g.db
 
 
 @app.teardown_appcontext
@@ -47,7 +43,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS shops(
-        shop_id TEXT,
+        shop_id TEXT PRIMARY KEY,
         name TEXT,
         open INT,
         approved INT,
@@ -57,7 +53,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS match_users(
-        user_id TEXT,
+        user_id TEXT PRIMARY KEY,
         people INT,
         shop_id TEXT,
         amount TEXT,
@@ -70,7 +66,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS tables(
-        id TEXT,
+        id TEXT PRIMARY KEY,
         shop_id TEXT,
         amount TEXT,
         table_index INT
@@ -89,7 +85,6 @@ def init_db():
     db.commit()
 
 
-
 def main_menu(user_id=None):
     items = [
         QuickReplyButton(action=MessageAction(label="🏪 指定店家", text="指定店家")),
@@ -98,17 +93,13 @@ def main_menu(user_id=None):
     ]
 
     if user_id in ADMIN_IDS:
-        items.append(
-            QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理"))
-        )
+        items.append(QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理")))
 
     return TextSendMessage("請選擇功能", quick_reply=QuickReply(items=items))
 
 
 def back_menu():
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
-    ])
+    return QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])
 
 
 def get_group_link(shop_id):
@@ -122,13 +113,12 @@ def get_next_table_index(shop_id):
     row = db.execute("SELECT MAX(table_index) FROM tables WHERE shop_id=?", (shop_id,)).fetchone()
     return (row[0] or 0) + 1
 
+
 def get_table_users(table_id):
     db = get_db()
-    rows = db.execute(
-        "SELECT user_id FROM match_users WHERE table_id=?",
-        (table_id,)
-    ).fetchall()
+    rows = db.execute("SELECT user_id FROM match_users WHERE table_id=?", (table_id,)).fetchall()
     return [r[0] for r in rows]
+
 
 
 def build_table_status_msg(table_id, title="🀄 桌況更新"):
@@ -175,8 +165,9 @@ def push_table(table_id, title="🀄 桌況更新"):
 def try_make_table(shop_id, amount):
     db = get_db()
 
-    row = db.execute(
-        SELECT user_id,people FROM match_users 
+    rows = db.execute("""
+        SELECT user_id, people 
+        FROM match_users 
         WHERE shop_id=? AND amount=? AND status='waiting'
         ORDER BY rowid
     """, (shop_id, amount)).fetchall()
@@ -211,8 +202,8 @@ def try_make_table(shop_id, amount):
 
     db.commit()
 
-    # ✅ ready 自動推播
     msg = f"🎉 成桌完成\n🪑 桌號 {table_index}\n💰 金額 {amount}\n⏱ {COUNTDOWN_READY} 秒內確認"
+
     for u in selected:
         line_bot_api.push_message(u, TextSendMessage(
             msg,
@@ -222,7 +213,6 @@ def try_make_table(shop_id, amount):
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ])
         ))
-
 
 
 def check_confirm(table_id):
@@ -255,18 +245,11 @@ def check_confirm(table_id):
     db.execute("DELETE FROM match_users WHERE table_id=?", (table_id,))
     db.execute("DELETE FROM tables WHERE id=?", (table_id,))
     db.commit()
-@app.route("/callback", methods=["POST"])
-def callback():
-    signature = request.headers["X-Line-Signature"]
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return "OK"
 
 
 def timeout_checker():
+    init_db()
+
     while True:
         try:
             db = sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -290,19 +273,18 @@ def timeout_checker():
 
             db.commit()
             db.close()
-        except:
-            pass
+        except Exception as e:
+            print("timeout error:", e)
 
         time.sleep(3)
 
 
 def start_timeout_thread():
-    while True:
-        with app.app_context():
-            timeout_checker()
+    threading.Thread(target=timeout_checker, daemon=True).start()
 
 
-threading.Thread(target=start_timeout_thread, daemon=True).start()
+start_timeout_thread()
+
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -843,6 +825,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
