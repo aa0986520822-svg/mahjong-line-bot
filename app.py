@@ -441,17 +441,17 @@ def handle_message(event):
 
 
 # ===== 新增紀錄 =====
-    if text == "新增紀錄":
+if text == "新增紀錄":
     user_state[user_id] = {"mode": "note_amount"}
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
     )
-            return
+    return
 
 
 # ===== 記事本輸入金額 =====
-    if user_state.get(user_id, {}).get("mode") == "note_amount":
+if user_state.get(user_id, {}).get("mode") == "note_amount":
     val = text.strip()
 
     if not re.fullmatch(r"-?\d+", val):
@@ -475,7 +475,7 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(f"✅ 已新增：{amount:+}", quick_reply=back_menu())
     )
-        return
+    return
 
 
 # ===== 查看當月 =====
@@ -766,6 +766,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
