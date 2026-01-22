@@ -122,11 +122,59 @@ def get_next_table_index(shop_id):
     row = db.execute("SELECT MAX(table_index) FROM tables WHERE shop_id=?", (shop_id,)).fetchone()
     return (row[0] or 0) + 1
 
+def get_table_users(table_id):
+    db = get_db()
+    rows = db.execute(
+        "SELECT user_id FROM match_users WHERE table_id=?",
+        (table_id,)
+    ).fetchall()
+    return [r[0] for r in rows]
+
+
+def build_table_status_msg(table_id, title="🀄 桌況更新"):
+    db = get_db()
+    rows = db.execute("""
+        SELECT user_id, status, people
+        FROM match_users
+        WHERE table_id=?
+        ORDER BY table_index
+    """, (table_id,)).fetchall()
+
+    if not rows:
+        return None
+
+    total = sum(r[2] for r in rows)
+
+    msg = f"{title}\n\n"
+    msg += f"👥 人數：{total} / 4\n\n"
+
+    for i, (uid, status, p) in enumerate(rows, 1):
+        icon = "⏳"
+        if status == "ready":
+            icon = "📩"
+        elif status == "confirmed":
+            icon = "✅"
+
+        msg += f"{i}. {p}人 {icon} {status}\n"
+
+    return msg
+
+
+def push_table(table_id, title="🀄 桌況更新"):
+    msg = build_table_status_msg(table_id, title)
+    if not msg:
+        return
+
+    for uid in get_table_users(table_id):
+        try:
+            line_bot_api.push_message(uid, TextSendMessage(msg))
+        except Exception as e:
+            print("push error:", e)
 
 def try_make_table(shop_id, amount):
     db = get_db()
 
-    rows = db.execute("""
+    row = db.execute(
         SELECT user_id,people FROM match_users 
         WHERE shop_id=? AND amount=? AND status='waiting'
         ORDER BY rowid
@@ -146,7 +194,7 @@ def try_make_table(shop_id, amount):
     if total != 4:
         return
 
-    table_id = f"{shop_id}_{int(time.time())}"
+    table_id = f"{shop_id}_{int(time.time()*1000)}"
     expire = time.time() + COUNTDOWN_READY
     table_index = get_next_table_index(shop_id)
 
@@ -162,15 +210,18 @@ def try_make_table(shop_id, amount):
 
     db.commit()
 
+    # ✅ ready 自動推播
+    msg = f"🎉 成桌完成\n🪑 桌號 {table_index}\n💰 金額 {amount}\n⏱ {COUNTDOWN_READY} 秒內確認"
     for u in selected:
         line_bot_api.push_message(u, TextSendMessage(
-            f"🎉 成桌完成\n🪑 桌號 {table_index}\n💰 金額 {amount}\n⏱ {COUNTDOWN_READY} 秒內確認",
+            msg,
             quick_reply=QuickReply(items=[
                 QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
                 QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ])
         ))
+
 
 
 def check_confirm(table_id):
@@ -539,7 +590,7 @@ if text == "查看上月":
     total = 0
     msg = "⏪ 上月紀錄\n\n"
 
-for amt, t in rows:
+    for amt, t in rows:
     total += amt
     msg += f"{t}｜{amt:+}\n"
 
@@ -549,7 +600,7 @@ line_bot_api.reply_message(
     event.reply_token,
     TextSendMessage(msg, quick_reply=back_menu())
 )
-return
+    return
 
 
 
@@ -768,6 +819,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
