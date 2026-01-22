@@ -43,7 +43,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS shops(
-        shop_id TEXT PRIMARY KEY,
+        shop_id TEXT,
         name TEXT,
         open INT,
         approved INT,
@@ -53,7 +53,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS match_users(
-        user_id TEXT PRIMARY KEY,
+        user_id TEXT,
         people INT,
         shop_id TEXT,
         amount TEXT,
@@ -66,7 +66,7 @@ def init_db():
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS tables(
-        id TEXT PRIMARY KEY,
+        id TEXT,
         shop_id TEXT,
         amount TEXT,
         table_index INT
@@ -93,13 +93,17 @@ def main_menu(user_id=None):
     ]
 
     if user_id in ADMIN_IDS:
-        items.append(QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理")))
+        items.append(
+            QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理"))
+        )
 
     return TextSendMessage("請選擇功能", quick_reply=QuickReply(items=items))
 
 
 def back_menu():
-    return QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
+    ])
 
 
 def get_group_link(shop_id):
@@ -116,9 +120,11 @@ def get_next_table_index(shop_id):
 
 def get_table_users(table_id):
     db = get_db()
-    rows = db.execute("SELECT user_id FROM match_users WHERE table_id=?", (table_id,)).fetchall()
+    rows = db.execute(
+        "SELECT user_id FROM match_users WHERE table_id=?",
+        (table_id,)
+    ).fetchall()
     return [r[0] for r in rows]
-
 
 
 def build_table_status_msg(table_id, title="🀄 桌況更新"):
@@ -139,11 +145,12 @@ def build_table_status_msg(table_id, title="🀄 桌況更新"):
     msg += f"👥 人數：{total} / 4\n\n"
 
     for i, (uid, status, p) in enumerate(rows, 1):
-        icon = "⏳"
         if status == "ready":
             icon = "📩"
         elif status == "confirmed":
             icon = "✅"
+        else:
+            icon = "⏳"
 
         msg += f"{i}. {p}人 {icon} {status}\n"
 
@@ -166,8 +173,7 @@ def try_make_table(shop_id, amount):
     db = get_db()
 
     rows = db.execute("""
-        SELECT user_id, people 
-        FROM match_users 
+        SELECT user_id,people FROM match_users 
         WHERE shop_id=? AND amount=? AND status='waiting'
         ORDER BY rowid
     """, (shop_id, amount)).fetchall()
@@ -203,16 +209,18 @@ def try_make_table(shop_id, amount):
     db.commit()
 
     msg = f"🎉 成桌完成\n🪑 桌號 {table_index}\n💰 金額 {amount}\n⏱ {COUNTDOWN_READY} 秒內確認"
-
     for u in selected:
         line_bot_api.push_message(u, TextSendMessage(
             msg,
             quick_reply=QuickReply(items=[
                 QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
                 QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+                QuickReplyButton(action=MessageAction(label="🚪 取消配桌", text="取消配桌")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ])
         ))
+
+    push_table(table_id, "🪑 桌子成立")
 
 
 def check_confirm(table_id):
@@ -279,11 +287,18 @@ def timeout_checker():
         time.sleep(3)
 
 
-def start_timeout_thread():
-    threading.Thread(target=timeout_checker, daemon=True).start()
+threading.Thread(target=timeout_checker, daemon=True).start()
 
 
-start_timeout_thread()
+@app.route("/callback", methods=["POST"])
+def callback():
+    signature = request.headers["X-Line-Signature"]
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return "OK"
 
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -293,7 +308,7 @@ def handle_message(event):
 
     user_id = event.source.user_id
     text = event.message.text.strip()
-
+    
     # ===== 任意輸入回主選單 =====
     if user_id not in user_state and text not in [
         "指定店家","記事本","店家後台","店家管理",
@@ -309,20 +324,15 @@ def handle_message(event):
         rows = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
 
         if not rows:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("目前沒有營業店家", quick_reply=back_menu())
-            )
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
             return
 
-        items = [QuickReplyButton(action=MessageAction(label=name, text=f"店家:{sid}"))
-                 for sid, name in rows]
+        items = [QuickReplyButton(action=MessageAction(label=n, text=f"店家:{sid}")) for sid, n in rows]
         items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items))
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
         return
 
     # ===== 選店 =====
@@ -338,21 +348,14 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items))
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items)))
         return
 
     # ===== 金額 =====
     if text.startswith("金額:"):
         amount = text.split(":", 1)[1]
-
-        if user_id not in user_state:
-            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-            return
-
-        user_state[user_id]["amount"] = amount
+        user_state.setdefault(user_id, {})["amount"] = amount
 
         items = [
             QuickReplyButton(action=MessageAction(label="1人", text="人數:1")),
@@ -362,30 +365,17 @@ def handle_message(event):
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=items))
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("請選擇人數", quick_reply=QuickReply(items=items)))
         return
 
     # ===== 人數 =====
     if text.startswith("人數:"):
-        try:
-            people = int(text.split(":", 1)[1])
-        except:
-            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-            return
-
+        people = int(text.split(":", 1)[1])
         data = user_state.get(user_id)
-        if not data:
-            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-            return
 
         shop_id = data.get("shop_id")
         amount = data.get("amount")
-        if not shop_id or not amount:
-            line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-            return
 
         db.execute("""
             INSERT OR REPLACE INTO match_users 
@@ -396,14 +386,8 @@ def handle_message(event):
 
         try_make_table(shop_id, amount)
 
-        row = db.execute("SELECT table_id FROM match_users WHERE user_id=?", (user_id,)).fetchone()
-        if row and row[0]:
-            push_table(row[0], "👤 有玩家加入桌子")
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu())
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 已加入配桌等待中", quick_reply=back_menu()))
         return
 
     # ===== 加入 =====
@@ -414,17 +398,14 @@ def handle_message(event):
             return
 
         table_id = row[0]
-
         db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
         db.commit()
 
-        push_table(table_id, "✅ 有玩家確認加入")
+        push_table(table_id, "✅ 有玩家加入")
         check_confirm(table_id)
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("✅ 已確認加入", quick_reply=back_menu())
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
         return
 
     # ===== 放棄 =====
@@ -433,7 +414,6 @@ def handle_message(event):
 
         if row:
             shop_id, amount, table_id = row
-
             db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
             db.execute("""
                 UPDATE match_users 
@@ -442,15 +422,24 @@ def handle_message(event):
             """, (table_id,))
             db.commit()
 
-            if table_id:
-                push_table(table_id, "❌ 有玩家離開桌子")
-
+            push_table(table_id, "❌ 有玩家離開")
             try_make_table(shop_id, amount)
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("❌ 已放棄配桌", quick_reply=back_menu())
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("❌ 已放棄配桌", quick_reply=back_menu()))
+        return
+
+    # ===== 取消配桌 =====
+    if text == "取消配桌":
+        row = db.execute("SELECT shop_id,amount FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if row:
+            shop_id, amount = row
+            db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+            db.commit()
+            try_make_table(shop_id, amount)
+
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🚪 已取消配桌", quick_reply=back_menu()))
         return
 
     # ===== 記事本 =====
@@ -791,3 +780,4 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
