@@ -626,8 +626,9 @@ if text == "清除紀錄":
 
 # ================= TIMEOUT 檢查 =================
 
+
 def timeout_checker():
-    init_db()  # ✅ 保證資料表先建立
+    init_db()
 
     while True:
         try:
@@ -663,7 +664,6 @@ def start_timeout_thread():
 
 
 start_timeout_thread()
-
 
 # ================= 店家後台 =================
 
@@ -825,6 +825,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
