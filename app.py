@@ -358,19 +358,19 @@ def handle_message(event):
         if not rows:
             line_bot_api.reply_message(event.reply_token,
                 TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
-            return
+            return True
 
         items = [QuickReplyButton(action=MessageAction(label=n, text=f"店家:{sid}")) for sid, n in rows]
         items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
 
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
-        return
+        return True
 
     # ===== 選店 =====
     if text.startswith("店家:"):
         shop_id = text.split(":", 1)[1]
-        user_state[user_id] = {"shop_id": shop_id}
+        user_state[user_id] = {"step": "wait_amount", "shop_id": shop_id}
 
         items = [
             QuickReplyButton(action=MessageAction(label="50/20", text="金額:50/20")),
@@ -382,7 +382,8 @@ def handle_message(event):
 
         line_bot_api.reply_message(event.reply_token,
             TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items)))
-        return
+        return True
+
 
     # ===== 金額 =====
     if text.startswith("金額:"):
@@ -804,18 +805,21 @@ def handle_shop_logic(event, user_id, text, db):
             TextSendMessage("請貼上 Google Map 連結", quick_reply=back_menu())
         )
         return True
-    if user_state.get(user_id, {}).get("mode") == "shop_set_map":
+    if user_state.get(user_id, {}).get("step") == "wait_map":
         sid = user_state[user_id]["shop_id"]
+
+        if not text.startswith("http"):
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("請輸入正確的地圖連結", quick_reply=back_menu()))
+            return True
 
         db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (text, sid))
         db.commit()
 
-        user_state[user_id]["mode"] = "shop_menu"
+        user_state[user_id].pop("step", None)
 
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("✅ 已更新店家地圖", quick_reply=back_menu())
-        )
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("✅ 地圖已設定完成", quick_reply=back_menu()))
         return True
 
 
@@ -1037,6 +1041,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
