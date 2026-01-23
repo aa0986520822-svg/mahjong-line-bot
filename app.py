@@ -82,6 +82,21 @@ def init_db():
         time TEXT
     )
     """)
+    
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS shops(
+        shop_id TEXT,
+        name TEXT,
+        open INT,
+        approved INT,
+        group_link TEXT,
+        owner_id TEXT,
+        partner_map TEXT
+    )
+    """)
+    
+    db.execute("ALTER TABLE shops ADD COLUMN partner_map TEXT")
+
 
     db.commit()
 
@@ -90,6 +105,7 @@ def main_menu(user_id=None):
     items = [
         QuickReplyButton(action=MessageAction(label="🏪 指定店家", text="指定店家")),
         QuickReplyButton(action=MessageAction(label="📒 記事本", text="記事本")),
+        QuickReplyButton(action=MessageAction(label="🗺 合作店家地圖", text="合作店家")),
         QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")),
     ]
 
@@ -601,6 +617,49 @@ def handle_message(event):
         )
         return
         
+    if text == "合作店家" and user_state.get(user_id, {}).get("shop_id"):
+        user_state[user_id]["mode"] = "shop_set_map"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請輸入 Google Map 連結", quick_reply=back_menu())
+        )
+        return True
+
+
+    if user_state.get(user_id, {}).get("mode") == "shop_set_map":
+        sid = user_state[user_id]["shop_id"]
+        db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (text, sid))
+        db.commit()
+
+        user_state[user_id]["mode"] = "shop_menu"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已設定合作店家地圖", quick_reply=back_menu())
+        )
+        return True
+
+    if text == "合作店家地圖":
+        rows = db.execute("SELECT name,partner_map FROM shops WHERE approved=1 AND partner_map IS NOT NULL").fetchall()
+
+        if not rows:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("目前尚無合作店家地圖", quick_reply=back_menu())
+            )
+            return True
+
+        msg = "🗺 合作店家地圖\n\n"
+        for name, link in rows:
+            msg += f"🏪 {name}\n{link}\n\n"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu())
+        )
+        return True
+
+        
 # ================= 店家後台 ================= #  
 
 def show_shop_menu(event):
@@ -755,6 +814,7 @@ def handle_admin_logic(event, user_id, text, db):
                 QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
                 QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
                 QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
+                QuickReplyButton(action=MessageAction(label="🗺 合作店家地圖設定", text="地圖設定")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
             ]))
         )
@@ -802,19 +862,20 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
 
-        if user_state.get(user_id, {}).get("mode") == "admin_review_select" and text.startswith("審核:"):
-            sid = text.split(":", 1)[1]
-            user_state[user_id] = {"mode": "admin_review_confirm", "sid": sid}
+    if user_state.get(user_id, {}).get("mode") == "admin_review_select" and text.startswith("審核:"):
+        sid = text.split(":", 1)[1]
+        user_state[user_id] = {"mode": "admin_review_confirm", "sid": sid}
 
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("請選擇審核結果", quick_reply=QuickReply(items=[
-                    QuickReplyButton(action=MessageAction(label="✅ 通過", text="同意審核")),
-                    QuickReplyButton(action=MessageAction(label="❌ 不通過", text="不同意審核")),
-                    QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
-                ]))
-            )
-            return True
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請選擇審核結果", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="✅ 通過", text="同意審核")),
+                QuickReplyButton(action=MessageAction(label="❌ 不通過", text="不同意審核")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            ]))
+        )
+        return True
+
 
     if user_state.get(user_id, {}).get("mode") == "admin_review_confirm":
         if text == "選單":
@@ -836,31 +897,46 @@ def handle_admin_logic(event, user_id, text, db):
 
     # === 刪除 ===
     if user_id in ADMIN_IDS and text == "店家刪除":
-        user_state[user_id] = {"mode": "admin_delete"}
         rows = db.execute("SELECT shop_id,name FROM shops").fetchall()
 
-        msg = "請輸入要刪除的店家ID\n\n"
+        if not rows:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("目前沒有店家", quick_reply=back_menu())
+            )
+            return True
+
+        items = []
         for sid, name in rows:
-            msg += f"{name}\nID:{sid}\n\n"
+            items.append(
+                QuickReplyButton(
+                    action=MessageAction(label=f"🏪 {name}"[:20], text=f"刪除:{sid}")
+                )
+            )
 
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+
+        user_state[user_id] = {"mode": "admin_delete_select"}
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🗑 選擇要刪除的店家", quick_reply=QuickReply(items=items))
+        )
         return True
-
-    if user_state.get(user_id, {}).get("mode") == "admin_delete":
-        if text == "選單":
-            user_state.pop(user_id, None)
-            return False
-
-        user_state[user_id] = {"mode": "admin_delete_confirm", "sid": text}
+    
+    if user_state.get(user_id, {}).get("mode") == "admin_delete_select" and text.startswith("刪除:"):
+        sid = text.split(":", 1)[1]
+        user_state[user_id] = {"mode": "admin_delete_confirm", "sid": sid}
 
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("⚠ 確定刪除？", quick_reply=QuickReply(items=[
                 QuickReplyButton(action=MessageAction(label="✅ 確定刪除", text="確認刪除")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ]))
         )
         return True
+
 
     if user_state.get(user_id, {}).get("mode") == "admin_delete_confirm":
         if text == "選單":
@@ -877,8 +953,57 @@ def handle_admin_logic(event, user_id, text, db):
         line_bot_api.reply_message(event.reply_token, TextSendMessage("🗑 已處理", quick_reply=back_menu()))
         return True
 
-    return False
+        return False
+        
+    if user_id in ADMIN_IDS and text == "地圖設定":
+        rows = db.execute("SELECT shop_id,name FROM shops WHERE approved=1").fetchall()
 
+        if not rows:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("目前沒有已核准店家", quick_reply=back_menu())
+            )
+            return True
+
+        items = []
+        for sid, name in rows:
+            items.append(
+                QuickReplyButton(
+                    action=MessageAction(label=f"🏪 {name}"[:20], text=f"地圖:{sid}")
+                )
+            )
+
+        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+
+        user_state[user_id] = {"mode": "admin_map_select"}
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🗺 選擇要設定地圖的店家", quick_reply=QuickReply(items=items))
+        )
+        return True
+    if user_state.get(user_id, {}).get("mode") == "admin_map_select" and text.startswith("地圖:"):
+        sid = text.split(":", 1)[1]
+        user_state[user_id] = {"mode": "admin_map_input", "sid": sid}
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請貼上 Google Map 連結", quick_reply=back_menu())
+        )
+        return True
+    if user_state.get(user_id, {}).get("mode") == "admin_map_input":
+        sid = user_state[user_id]["sid"]
+
+        db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (text, sid))
+        db.commit()
+
+        user_state.pop(user_id, None)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已更新合作店家地圖", quick_reply=back_menu())
+        )
+        return True
 
 
 # ================= MAIN =================
@@ -888,6 +1013,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
