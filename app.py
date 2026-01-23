@@ -594,7 +594,7 @@ def handle_message(event):
             TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
         )
         return
- @handler.add(MessageEvent, message=TextMessage)
+@handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
     db = get_db()
@@ -935,6 +935,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
