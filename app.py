@@ -612,7 +612,7 @@ def show_shop_menu(event):
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]))
     )
-        return True
+    return True
 
 def handle_shop_logic(event, user_id, text, db):
 
@@ -870,6 +870,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
