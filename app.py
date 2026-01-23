@@ -620,7 +620,7 @@ def handle_shop_logic(event, user_id, text, db):
     # === 回主畫面 ===
     if text == "選單":
         user_state.pop(user_id, None)
-        return True
+        return False
 
     # === 進入後台 ===
     if text == "店家後台":
@@ -871,6 +871,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
