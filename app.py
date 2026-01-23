@@ -313,6 +313,10 @@ def handle_message(event):
     if handle_admin_logic(event, user_id, text, db):
         return
 
+    # ✅ 再來處理 shop
+    if handle_shop_logic(event, user_id, text, db):
+        return
+
     # ===== 回主選單 (最高優先) =====
     if text == "選單":
         user_state.pop(user_id, None)
@@ -852,6 +856,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
