@@ -655,7 +655,8 @@ def handle_message(event):
             "合作店家地圖"
         ]
     ]):
-
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return True
    
 # ================= 店家後台 ================= #  
 
@@ -1010,6 +1011,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
