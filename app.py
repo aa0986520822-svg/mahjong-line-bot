@@ -644,18 +644,17 @@ def handle_message(event):
         return
 # ================= 店家管理 =================
 
-if user_id in ADMIN_IDS and text == "店家管理":
-    user_state[user_id] = {"mode": "admin_menu"}
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
-            QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
-            QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-        ]))
-    )
-    return
+def handle_admin_logic(event, user_id, text, db):
+    if user_id in ADMIN_IDS and text == "店家管理":
+        user_state[user_id] = {"mode": "admin_menu"}
+        line_bot_api.reply_message(event.reply_token,
+            TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
+                QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
+                QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+            ])))
+        return 
 
 
 # ===== 查看店家 =====
@@ -1001,6 +1000,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
