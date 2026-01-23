@@ -630,52 +630,52 @@ def handle_message(event):
 
 
 
-if text == "開始營業" and user_state.get(user_id, {}).get("shop_id"):
-    sid = user_state[user_id]["shop_id"]
-    db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (sid,))
-    db.commit()
+    if text == "開始營業" and user_state.get(user_id, {}).get("shop_id"):
+        sid = user_state[user_id]["shop_id"]
+        db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (sid,))
+        db.commit()
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("🟢 已開始營業", quick_reply=back_menu())
-    )
-    return
-
-
-if text == "今日休息" and user_state.get(user_id, {}).get("shop_id"):
-    sid = user_state[user_id]["shop_id"]
-    db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
-    db.commit()
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("🔴 今日休息", quick_reply=back_menu())
-    )
-    return
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🟢 已開始營業", quick_reply=back_menu())
+        )
+        return
 
 
-if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
-    user_state[user_id]["mode"] = "set_group"
+    if text == "今日休息" and user_state.get(user_id, {}).get("shop_id"):
+        sid = user_state[user_id]["shop_id"]
+        db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
+        db.commit()
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("請輸入群組連結", quick_reply=back_menu())
-    )
-    return
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🔴 今日休息", quick_reply=back_menu())
+        )
+        return
 
 
-if user_state.get(user_id, {}).get("mode") == "set_group":
-    sid = user_state[user_id]["shop_id"]
-    db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
-    db.commit()
+    if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
+        user_state[user_id]["mode"] = "set_group"
 
-    user_state[user_id]["mode"] = "shop_menu"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請輸入群組連結", quick_reply=back_menu())
+        )
+        return
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("✅ 已設定群組", quick_reply=back_menu())
-    )
-    return
+
+    if user_state.get(user_id, {}).get("mode") == "set_group":
+        sid = user_state[user_id]["shop_id"]
+        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
+        db.commit()
+
+        user_state[user_id]["mode"] = "shop_menu"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已設定群組", quick_reply=back_menu())
+        )
+        return
 
 
 # ================= 店家管理 =================
@@ -1020,6 +1020,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
