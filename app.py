@@ -339,15 +339,18 @@ def handle_message(event):
         return
 
     # ===== 任意輸入回主選單 =====
-    if user_id not in user_state and text not in [
-        "指定店家","記事本","店家後台","店家管理",
-        "新增紀錄","查看當月","查看上月","清除紀錄",
-        "開始營業","今日休息","設定群組",
-        "我1人","我2人","我3人",
-        "加入","放棄","取消配桌"
-    ]:
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
+    if user_id not in user_state and not any([
+        text.startswith("店家:"),
+        text.startswith("金額:"),
+        text.startswith("人數:"),
+        text in [
+            "指定店家","記事本","店家後台","店家管理",
+            "新增紀錄","查看當月","查看上月","清除紀錄",
+            "開始營業","今日休息","設定群組",
+            "加入","放棄","取消配桌",
+            "合作店家地圖"
+        ]
+    ]):
 
 
 
@@ -632,26 +635,26 @@ def handle_message(event):
 
         items = []
     
-    for name, link in rows:
-        # 防呆：一定要是網址
-        if not link.startswith("http"):
-            continue
+        for name, link in rows:
+            # 防呆：一定要是網址
+            if not link.startswith("http"):
+                continue
+
+            items.append(
+                QuickReplyButton(
+                    action=URIAction(label=f"🏪 {name}", uri=link)
+                )
+            )
 
         items.append(
-            QuickReplyButton(
-                action=URIAction(label=f"🏪 {name}", uri=link)
-            )
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
         )
 
-    items.append(
-        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
-    )
-
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("🗺 營業中合作店家地圖", quick_reply=QuickReply(items=items))
-    )
-    return True
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🗺 營業中合作店家地圖", quick_reply=QuickReply(items=items))
+        )
+        return True
 
 
    
@@ -1008,6 +1011,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
