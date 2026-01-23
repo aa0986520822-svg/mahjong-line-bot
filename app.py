@@ -309,13 +309,14 @@ def handle_message(event):
     user_id = event.source.user_id
     text = event.message.text.strip()
 
-    # ✅ admin
+    # ✅ admin 最先
     if handle_admin_logic(event, user_id, text, db):
         return
 
-    # ✅ shop
+    # ✅ shop 第二
     if handle_shop_logic(event, user_id, text, db):
         return
+
 
     # ===== 回主選單 =====
     if text == "選單":
@@ -856,6 +857,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
