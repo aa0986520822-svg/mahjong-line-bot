@@ -772,32 +772,47 @@ def handle_admin_logic(event, user_id, text, db):
 
     # === 審核 ===
     if user_id in ADMIN_IDS and text == "店家審核":
-        user_state[user_id] = {"mode": "admin_review"}
         rows = db.execute("SELECT shop_id,name,approved FROM shops").fetchall()
 
-        msg = "請輸入要審核的店家ID\n\n"
-        for sid, name, ap in rows:
-            msg += f"{name} | {'已通過' if ap else '未審核'}\nID:{sid}\n\n"
-
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+        if not rows:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("目前沒有店家", quick_reply=back_menu())
+        )
         return True
 
-    if user_state.get(user_id, {}).get("mode") == "admin_review":
-        if text == "選單":
-            user_state.pop(user_id, None)
-            return False
+        items = []
+        for sid, name, ap in rows:
+            label = f"🏪 {name}"
+            items.append(
+                QuickReplyButton(
+                    action=MessageAction(label=label[:20], text=f"審核:{sid}")
+                )
+            )
 
-        user_state[user_id] = {"mode": "admin_review_confirm", "sid": text}
+        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+
+        user_state[user_id] = {"mode": "admin_review_select"}
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("請選擇審核結果", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="✅ 同意", text="同意審核")),
-                QuickReplyButton(action=MessageAction(label="❌ 不同意", text="不同意審核")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-            ]))
+            TextSendMessage("🛠 選擇要審核的店家", quick_reply=QuickReply(items=items))
         )
         return True
+
+        if user_state.get(user_id, {}).get("mode") == "admin_review_select" and text.startswith("審核:"):
+            sid = text.split(":", 1)[1]
+            user_state[user_id] = {"mode": "admin_review_confirm", "sid": sid}
+
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("請選擇審核結果", quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="✅ 通過", text="同意審核")),
+                    QuickReplyButton(action=MessageAction(label="❌ 不通過", text="不同意審核")),
+                    QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+                ]))
+            )
+            return True
 
     if user_state.get(user_id, {}).get("mode") == "admin_review_confirm":
         if text == "選單":
@@ -871,6 +886,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
