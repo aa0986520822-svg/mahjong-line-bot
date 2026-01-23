@@ -641,6 +641,7 @@ def handle_shop_logic(event, user_id, text, db):
         user_state[user_id] = {"mode": "shop_menu", "shop_id": sid}
 
         if ap == 0:
+            user_state.pop(user_id, None)
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
@@ -886,6 +887,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
