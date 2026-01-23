@@ -332,27 +332,7 @@ def handle_message(event):
         return
 
 
-    # ===== 回主選單 =====
-    if text == "選單":
-        user_state.pop(user_id, None)
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
-
-    # ===== 任意輸入回主選單 =====
-    if user_id not in user_state and not any([
-        text.startswith("店家:"),
-        text.startswith("金額:"),
-        text.startswith("人數:"),
-        text in [
-            "指定店家","記事本","店家後台","店家管理",
-            "新增紀錄","查看當月","查看上月","清除紀錄",
-            "開始營業","今日休息","設定群組",
-            "加入","放棄","取消配桌",
-            "合作店家地圖"
-        ]
-    ]):
-
-
+   
 
     # ===== 指定店家 =====
     if text == "指定店家":
@@ -656,6 +636,25 @@ def handle_message(event):
         )
         return True
 
+ # ===== 回主選單 =====
+    if text == "選單":
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return
+
+    # ===== 任意輸入回主選單 =====
+    if user_id not in user_state and not any([
+        text.startswith("店家:"),
+        text.startswith("金額:"),
+        text.startswith("人數:"),
+        text in [
+            "指定店家","記事本","店家後台","店家管理",
+            "新增紀錄","查看當月","查看上月","清除紀錄",
+            "開始營業","今日休息","設定群組",
+            "加入","放棄","取消配桌",
+            "合作店家地圖"
+        ]
+    ]):
 
    
 # ================= 店家後台 ================= #  
@@ -1011,6 +1010,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
