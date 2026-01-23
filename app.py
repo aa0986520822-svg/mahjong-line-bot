@@ -643,19 +643,21 @@ def handle_message(event):
             TextSendMessage("✅ 已設定群組",quick_reply=back_menu()))
         return
 # ================= 店家管理 =================
-        
-    if user_id in ADMIN_IDS and text == "店家管理":
-            user_state[user_id] = {"mode": "admin_menu"}
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
-                    QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
-                    QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
-                    QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
-                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-                ]))
-            )
-        return
+
+if user_id in ADMIN_IDS and text == "店家管理":
+    user_state[user_id] = {"mode": "admin_menu"}
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
+            QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
+            QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
+            QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+        ]))
+    )
+    return
+
+
 # ===== 查看店家 =====
 if user_id in ADMIN_IDS and text == "查看店家":
     rows = db.execute("SELECT shop_id, name, open, approved FROM shops").fetchall()
@@ -728,6 +730,35 @@ if user_state.get(user_id, {}).get("mode") == "admin_review_confirm":
             TextSendMessage("❌ 已標記為未通過", quick_reply=back_menu())
         )
         return
+
+
+# ===== 店家刪除 =====
+if user_id in ADMIN_IDS and text == "店家刪除":
+    user_state[user_id] = {"mode": "admin_delete"}
+    rows = db.execute("SELECT shop_id, name FROM shops").fetchall()
+
+    msg = "請輸入要刪除的店家ID\n\n"
+    for sid, name in rows:
+        msg += f"{name}\nID:{sid}\n\n"
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(msg, quick_reply=back_menu())
+    )
+    return
+
+
+if user_state.get(user_id, {}).get("mode") == "admin_delete":
+    db.execute("DELETE FROM shops WHERE shop_id=?", (text,))
+    db.commit()
+    user_state.pop(user_id, None)
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("🗑 店家已刪除", quick_reply=back_menu())
+    )
+    return
+
 
 
 # ===== 店家刪除 =====
@@ -970,6 +1001,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
