@@ -640,16 +640,20 @@ def handle_message(event):
         return True
 
     if text == "合作店家地圖":
-        rows = db.execute("SELECT name,partner_map FROM shops WHERE approved=1 AND partner_map IS NOT NULL").fetchall()
+        rows = db.execute("""
+            SELECT name,partner_map 
+            FROM shops 
+            WHERE approved=1 AND open=1 AND partner_map IS NOT NULL
+        """).fetchall()
 
         if not rows:
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage("目前尚無合作店家地圖", quick_reply=back_menu())
+                TextSendMessage("目前沒有營業中的合作店家", quick_reply=back_menu())
             )
             return True
 
-        msg = "🗺 合作店家地圖\n\n"
+        msg = "🗺 營業中合作店家\n\n"
         for name, link in rows:
             msg += f"🏪 {name}\n{link}\n\n"
 
@@ -659,7 +663,7 @@ def handle_message(event):
         )
         return True
 
-        
+   
 # ================= 店家後台 ================= #  
 
 def show_shop_menu(event):
@@ -669,6 +673,7 @@ def show_shop_menu(event):
             QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
             QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
             QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
+            QuickReplyButton(action=MessageAction(label="🗺 設定地圖", text="設定地圖")),
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]))
     )
@@ -793,6 +798,28 @@ def handle_shop_logic(event, user_id, text, db):
         return True
 
     return False
+    
+# === 設定地圖 ===
+    if text == "設定地圖" and user_state.get(user_id, {}).get("shop_id"):
+        user_state[user_id]["mode"] = "shop_set_map"
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請貼上 Google Map 連結", quick_reply=back_menu())
+        )
+        return True
+    if user_state.get(user_id, {}).get("mode") == "shop_set_map":
+        sid = user_state[user_id]["shop_id"]
+
+        db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (text, sid))
+        db.commit()
+
+        user_state[user_id]["mode"] = "shop_menu"
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("✅ 已更新店家地圖", quick_reply=back_menu())
+        )
+        return True
 
 
    
@@ -1013,6 +1040,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
