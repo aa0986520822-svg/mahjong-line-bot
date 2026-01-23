@@ -774,13 +774,13 @@ def handle_admin_logic(event, user_id, text, db):
     # === 審核 ===
     if user_id in ADMIN_IDS and text == "店家審核":
         rows = db.execute("SELECT shop_id,name,approved FROM shops").fetchall()
-
+        
         if not rows:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("目前沒有店家", quick_reply=back_menu())
-        )
-        return True
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("目前沒有店家", quick_reply=back_menu())
+            )
+            return True
 
         items = []
         for sid, name, ap in rows:
@@ -887,6 +887,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
