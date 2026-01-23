@@ -325,11 +325,11 @@ def handle_message(event):
 
     # ✅ admin 最先
     if handle_admin_logic(event, user_id, text, db):
-        return
+        return True
 
     # ✅ shop 第二
     if handle_shop_logic(event, user_id, text, db):
-        return
+        return True
 
 
    
@@ -472,7 +472,7 @@ def handle_message(event):
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ]))
         )
-        return
+        return True
 
 
     # ===== 新增紀錄 =====
@@ -482,7 +482,7 @@ def handle_message(event):
             event.reply_token,
             TextSendMessage("請輸入金額，例如：1000 或 -500", quick_reply=back_menu())
         )
-        return
+        return True
 
 
     # ===== 記事本輸入金額 =====
@@ -494,7 +494,7 @@ def handle_message(event):
                 event.reply_token,
                 TextSendMessage("請直接輸入金額，例如：1000 或 -500", quick_reply=back_menu())
             )
-            return
+            return True
 
         amount = int(val)
 
@@ -510,7 +510,7 @@ def handle_message(event):
             event.reply_token,
             TextSendMessage(f"✅ 已新增：{amount:+}", quick_reply=back_menu())
         )
-        return
+        return True
 
 
     # ===== 查看當月 =====
@@ -529,7 +529,7 @@ def handle_message(event):
                 event.reply_token,
                 TextSendMessage("📅 本月尚無紀錄", quick_reply=back_menu())
             )
-            return
+            return True
 
         total = 0
         msg = "📅 本月紀錄\n\n"
@@ -544,7 +544,7 @@ def handle_message(event):
             event.reply_token,
             TextSendMessage(msg, quick_reply=back_menu())
         )
-        return
+        return True
 
 
     # ===== 查看上月 =====
@@ -569,7 +569,7 @@ def handle_message(event):
                 event.reply_token,
                 TextSendMessage("⏪ 上月尚無紀錄", quick_reply=back_menu())
             )
-            return
+            return True
 
         total = 0
         msg = "⏪ 上月紀錄\n\n"
@@ -584,7 +584,7 @@ def handle_message(event):
             event.reply_token,
             TextSendMessage(msg, quick_reply=back_menu())
         )
-        return
+        return True
 
 
     # ===== 清除紀錄 =====
@@ -596,7 +596,7 @@ def handle_message(event):
             event.reply_token,
             TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
         )
-        return
+        return True
         
 
     if text == "合作店家地圖":
@@ -640,7 +640,7 @@ def handle_message(event):
     if text == "選單":
         user_state.pop(user_id, None)
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
+        return True
 
     # ===== 任意輸入回主選單 =====
     if user_id not in user_state and not any([
@@ -1010,6 +1010,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
