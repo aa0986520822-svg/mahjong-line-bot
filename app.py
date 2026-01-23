@@ -594,38 +594,40 @@ def handle_message(event):
             TextSendMessage("🧹 已清除所有記事本紀錄", quick_reply=back_menu())
         )
         return
- # ========= 店家後台 =========
+     # ========= 店家後台 =========
 
-if text == "店家後台":
-    user_state[user_id] = {"mode": "shop_input"}
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
-    )
-    return
+    if text == "店家後台":
+        user_state[user_id] = {"mode": "shop_input"}
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
+        )
+        return
 
 
-if user_state.get(user_id, {}).get("mode") == "shop_input":
-    name = text
-    sid = f"{user_id}_{int(time.time())}"
-    db.execute("INSERT INTO shops VALUES(?,?,?,?,?)", (sid, name, 0, 0, None))
-    db.commit()
+    if user_state.get(user_id, {}).get("mode") == "shop_input":
+        name = text
+        sid = f"{user_id}_{int(time.time())}"
 
-    user_state[user_id] = {
-        "mode": "shop_menu",
-        "shop_id": sid
-    }
+        db.execute("INSERT INTO shops VALUES(?,?,?,?,?)", (sid, name, 0, 0, None))
+        db.commit()
 
-    line_bot_api.reply_message(
-        event.reply_token,
-        TextSendMessage(f"🏪 {name}", quick_reply=QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
-            QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
-            QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-        ]))
-    )
-    return
+        user_state[user_id] = {
+            "mode": "shop_menu",
+            "shop_id": sid
+        }
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(f"🏪 {name}", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
+                QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
+                QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+            ]))
+        )
+        return
+
 
 
 if text == "開始營業" and user_state.get(user_id, {}).get("shop_id"):
@@ -1018,6 +1020,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
