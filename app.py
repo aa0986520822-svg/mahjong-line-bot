@@ -595,6 +595,8 @@ def handle_message(event):
         )
         return
         
+# ================= 店家後台 ================= #  
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     init_db()
@@ -713,118 +715,6 @@ def handle_message(event):
             ]))
         )
         return
-
-
-# ================= 店家後台 =================
-
-def handle_shop_logic(event, user_id, text, db):
-
-    # === 回主畫面直接離開 ===
-    if text == "選單":
-        user_state.pop(user_id, None)
-        return False
-
-    # === 進入後台 ===
-    if text == "店家後台":
-        user_state[user_id] = {"mode": "shop_input"}
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
-        )
-        return True
-
-    # === 輸入店名 ===
-    if user_state.get(user_id, {}).get("mode") == "shop_input":
-        name = text
-        shop_id = f"{user_id}_{int(time.time())}"
-
-        db.execute("INSERT INTO shops VALUES(?,?,?,?,?)",
-                   (shop_id, name, 0, 0, None))
-        db.commit()
-
-        user_state[user_id] = {"mode": "shop_wait", "shop_id": shop_id}
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(
-                f"🏪 {name}\n\n⏳ 已送出申請\n請等待管理員審核",
-                quick_reply=back_menu()
-            )
-        )
-        return True
-
-    # === 未審核阻擋 ===
-    if user_state.get(user_id, {}).get("mode") == "shop_wait":
-        row = db.execute(
-            "SELECT approved FROM shops WHERE shop_id=?",
-            (user_state[user_id]["shop_id"],)
-        ).fetchone()
-
-        if row and row[0] == 1:
-            user_state[user_id]["mode"] = "shop_menu"
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
-            )
-            return True
-
-    # === 開始營業 ===
-    if text == "開始營業" and user_state.get(user_id, {}).get("shop_id"):
-        sid = user_state[user_id]["shop_id"]
-
-        ap = db.execute("SELECT approved FROM shops WHERE shop_id=?", (sid,)).fetchone()
-        if not ap or ap[0] == 0:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("⛔ 尚未通過審核", quick_reply=back_menu())
-            )
-            return True
-
-        db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (sid,))
-        db.commit()
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("🟢 已開始營業", quick_reply=back_menu())
-        )
-        return True
-
-    # === 今日休息 ===
-    if text == "今日休息" and user_state.get(user_id, {}).get("shop_id"):
-        sid = user_state[user_id]["shop_id"]
-        db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
-        db.commit()
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("🔴 今日休息", quick_reply=back_menu())
-        )
-        return True
-
-    # === 設定群組 ===
-    if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
-        user_state[user_id]["mode"] = "set_group"
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("請輸入群組連結", quick_reply=back_menu())
-        )
-        return True
-
-    if user_state.get(user_id, {}).get("mode") == "set_group":
-        sid = user_state[user_id]["shop_id"]
-        db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (text, sid))
-        db.commit()
-
-        user_state[user_id]["mode"] = "shop_menu"
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("✅ 已設定群組", quick_reply=back_menu())
-        )
-        return True
-
-    return False
 
 
 # ================= 店家管理 =================
@@ -962,6 +852,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
