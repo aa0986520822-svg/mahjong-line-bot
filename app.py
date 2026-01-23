@@ -612,7 +612,7 @@ def handle_message(event):
                 QuickReplyButton(action=MessageAction(label="🔙 回主選單",text="選單")),
             ])))
         return
-        if text=="開始營業":
+    if text=="開始營業":
         sid=user_state[user_id]["shop_id"]
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?",(sid,))
         db.commit()
@@ -940,6 +940,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
