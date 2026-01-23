@@ -48,6 +48,7 @@ def init_db():
         open INT,
         approved INT,
         group_link TEXT
+        owner_id TEXT
     )
     """)
 
@@ -870,6 +871,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
