@@ -614,7 +614,8 @@ def show_shop_menu(event):
     )
     return True
 
-    def handle_shop_logic(event, user_id, text, db):
+
+def handle_shop_logic(event, user_id, text, db):
 
     # === 回主畫面 ===
     if text == "選單":
@@ -732,6 +733,7 @@ def show_shop_menu(event):
         return True
 
     return False
+
 
    
 # ================= 店家管理 =================
@@ -869,6 +871,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
