@@ -333,22 +333,72 @@ def handle_message(event):
 
 
    
-
-    # ===== 指定店家 =====
+# === 指定店家 === #
     if text == "指定店家":
-        rows = db.execute("SELECT shop_id,name FROM shops WHERE open=1 AND approved=1").fetchall()
+    row = db.execute(
+        "SELECT status FROM match_users WHERE user_id=?",
+        (user_id,)
+    ).fetchone()
 
-        if not rows:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
-            return True
+    # === 已經在配桌中 ===
+    if row:
+        items = [
+            QuickReplyButton(action=MessageAction(label="🔍 查看進度", text="查看進度")),
+            QuickReplyButton(action=MessageAction(label="❌ 取消配桌", text="取消配桌")),
+            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+        ]
 
-        items = [QuickReplyButton(action=MessageAction(label=n, text=f"店家:{sid}")) for sid, n in rows]
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
-
-        line_bot_api.reply_message(event.reply_token,
-            TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items)))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("你目前已有配桌紀錄", quick_reply=QuickReply(items=items))
+        )
         return True
+
+    # === 尚未配桌 ===
+    rows = db.execute(
+        "SELECT shop_id,name FROM shops WHERE open=1 AND approved=1"
+    ).fetchall()
+
+    if not rows:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("目前沒有營業店家", quick_reply=back_menu())
+        )
+        return True
+
+    items = [QuickReplyButton(action=MessageAction(label=n, text=f"店家:{sid}"))
+             for sid, n in rows]
+    items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("請選擇店家", quick_reply=QuickReply(items=items))
+    )
+    return True
+
+    if text == "查看進度":
+    row = db.execute("""
+        SELECT shops.name, match_users.amount, match_users.people, match_users.status
+        FROM match_users
+        JOIN shops ON match_users.shop_id = shops.shop_id
+        WHERE match_users.user_id=?
+    """, (user_id,)).fetchone()
+
+    if not row:
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+        return True
+
+    name, amount, people, status = row
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(
+            f"📌 配桌狀態\n\n🏪 {name}\n💰 {amount}\n👥 {people} 人\n📍 {status}",
+            quick_reply=back_menu()
+        )
+    )
+    return True
+
 
     # ===== 選店 =====
     if text.startswith("店家:"):
@@ -1010,6 +1060,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
