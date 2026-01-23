@@ -719,6 +719,11 @@ def handle_message(event):
 
 def handle_shop_logic(event, user_id, text, db):
 
+    # === 回主畫面直接離開 ===
+    if text == "選單":
+        user_state.pop(user_id, None)
+        return False
+
     # === 進入後台 ===
     if text == "店家後台":
         user_state[user_id] = {"mode": "shop_input"}
@@ -826,6 +831,11 @@ def handle_shop_logic(event, user_id, text, db):
 
 def handle_admin_logic(event, user_id, text, db):
 
+    # === 回主畫面直接離開 ===
+    if text == "選單":
+        user_state.pop(user_id, None)
+        return False
+
     # === 管理選單 ===
     if user_id in ADMIN_IDS and text == "店家管理":
         user_state[user_id] = {"mode": "admin_menu"}
@@ -864,6 +874,10 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     if user_state.get(user_id, {}).get("mode") == "admin_review":
+        if text == "選單":
+            user_state.pop(user_id, None)
+            return False
+
         user_state[user_id] = {"mode": "admin_review_confirm", "sid": text}
 
         line_bot_api.reply_message(
@@ -877,6 +891,10 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     if user_state.get(user_id, {}).get("mode") == "admin_review_confirm":
+        if text == "選單":
+            user_state.pop(user_id, None)
+            return False
+
         sid = user_state[user_id]["sid"]
 
         if text == "同意審核":
@@ -903,6 +921,10 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     if user_state.get(user_id, {}).get("mode") == "admin_delete":
+        if text == "選單":
+            user_state.pop(user_id, None)
+            return False
+
         user_state[user_id] = {"mode": "admin_delete_confirm", "sid": text}
 
         line_bot_api.reply_message(
@@ -915,6 +937,10 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     if user_state.get(user_id, {}).get("mode") == "admin_delete_confirm":
+        if text == "選單":
+            user_state.pop(user_id, None)
+            return False
+
         if text == "確認刪除":
             sid = user_state[user_id]["sid"]
             db.execute("DELETE FROM shops WHERE shop_id=?", (sid,))
@@ -926,7 +952,7 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     return False
-  
+
 
 
 # ================= MAIN =================
@@ -936,6 +962,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
