@@ -54,6 +54,7 @@ def init_db():
         table_index INT
     )
     """)
+    
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS tables(
@@ -78,11 +79,12 @@ def init_db():
         shop_id TEXT,
         name TEXT,
         open INT,
-        approved INT,
+        approved INT,ㄇㄇ
         group_link TEXT,
         owner_id TEXT,
         partner_map TEXT
     )
+    
     """)
 
     db.commit()
@@ -757,7 +759,7 @@ def handle_shop_logic(event, user_id, text, db):
         if ap == 0:
             user_state.pop(user_id, None)
             line_bot_api.reply_message(
-                event.reply_token,
+               event.reply_token,
                 TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
             )
             return True
@@ -802,8 +804,13 @@ def handle_shop_logic(event, user_id, text, db):
         return True
 
     # === 開始營業 ===
-    if text == "開始營業" and user_state.get(user_id, {}).get("shop_id"):
-        sid = user_state[user_id]["shop_id"]
+    if text == "開始營業":
+        sid = get_shop_id_by_user(db, user_id)
+        if not sid:
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("你尚未綁定店家", quick_reply=back_menu()))
+            return True
+            
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (sid,))
         db.commit()
 
@@ -813,17 +820,24 @@ def handle_shop_logic(event, user_id, text, db):
         )
         return True
 
-    # === 今日休息 ===
-    if text == "今日休息" and user_state.get(user_id, {}).get("shop_id"):
-        sid = user_state[user_id]["shop_id"]
+
+# === 今日休息 ===
+    if text == "今日休息":
+        sid = get_shop_id_by_user(db, user_id)
+        if not sid:
+            line_bot_api.reply_message(event.reply_token,
+                TextSendMessage("你尚未綁定店家", quick_reply=back_menu()))
+            return True
+
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
         db.commit()
-
+    
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("🔴 今日休息", quick_reply=back_menu())
         )
         return True
+
 
     # === 設定群組 ===
     if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
@@ -1068,6 +1082,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
