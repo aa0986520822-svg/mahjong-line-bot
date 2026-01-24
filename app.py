@@ -100,10 +100,10 @@ def init_db():
 
 def main_menu(user_id=None):
     items = [
-        QuickReplyButton(action=MessageAction(label="🏪 指定店家", text="指定店家")),
-        QuickReplyButton(action=MessageAction(label="📒 記事本", text="記事本")),
-        QuickReplyButton(action=MessageAction(label="🗺 合作店家地圖", text="合作店家")),
-        QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")),
+        QuickReplyButton(action=MessageAction(label="🏪 店家配桌 🏪", text="店家配桌")),
+        QuickReplyButton(action=MessageAction(label="📒 記事本 📒", text="記事本")),
+        QuickReplyButton(action=MessageAction(label="🗺 店家地圖 🗺", text="店家地圖")),
+        QuickReplyButton(action=MessageAction(label="🏪 店家合作", text="店家合作")),
     ]
 
     if user_id in ADMIN_IDS:
@@ -662,28 +662,38 @@ def handle_message(event):
 
         if not rows:
             line_bot_api.reply_message(
+            event.reply_token,
+                TextSendMessage("目前沒有營業中的合作店家", quick_reply=back_menu())
+            )
+            return True
+
+    if text == "合作店家地圖":
+        rows = db.execute("""
+            SELECT name, partner_map 
+            FROM shops 
+            WHERE approved=1 AND open=1 AND partner_map IS NOT NULL
+        """).fetchall()
+
+        if not rows:
+            line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage("目前沒有營業中的合作店家", quick_reply=back_menu())
             )
             return True
 
-        items = []
+        msg = "🗺 營業中合作店家\n\n"
 
         for name, link in rows:
-            if not link:
-                continue
-
-            link = link.strip()
-
-            # ✅ 自動補 https
             if not link.startswith("http"):
-                link = "https://" + link
+                continue
+            msg += f"🏪 {name}\n👉 {link}\n\n"
 
-            items.append(
-                QuickReplyButton(
-                    action=URIAction(label=f"🏪 {name}", uri=link)
-                )
-            )
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(msg, quick_reply=back_menu())
+        )
+        return True
+
 
         items.append(
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
@@ -1071,6 +1081,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
