@@ -333,8 +333,8 @@ def handle_message(event):
 
 
    
-# === 指定店家 ===
-    if text == "指定店家":
+# === 店家配桌 ===
+    if text == "店家配桌":
         row = db.execute(
             "SELECT status FROM match_users WHERE user_id=?",
             (user_id,)
@@ -652,8 +652,8 @@ def handle_message(event):
         )
         return True
         
-    # ===== 合作店家地圖 =====
-    if text == "合作店家地圖":
+    # ===== 店家地圖 =====
+    if text == "店家地圖":
         rows = db.execute("""
             SELECT name, partner_map 
             FROM shops 
@@ -667,7 +667,7 @@ def handle_message(event):
             )
             return True
 
-    if text == "合作店家地圖":
+    if text == "店家地圖":
         rows = db.execute("""
             SELECT name, partner_map 
             FROM shops 
@@ -701,7 +701,7 @@ def handle_message(event):
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("🗺 營業中合作店家地圖", quick_reply=QuickReply(items=items))
+            TextSendMessage("🗺 營業中店家地圖", quick_reply=QuickReply(items=items))
         )
         return True
 
@@ -718,22 +718,22 @@ def handle_message(event):
         text.startswith("金額:"),
         text.startswith("人數:"),
         text in [
-            "指定店家","記事本","店家後台","店家管理",
+            "店家配桌","記事本","店家合作","店家管理",
             "新增紀錄","查看當月","查看上月","清除紀錄",
             "開始營業","今日休息","設定群組",
             "加入","放棄","取消配桌",
-            "合作店家地圖","查看進度"
+            "店家地圖","查看進度"
         ]
     ]):
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return True
 
        
-# ================= 店家後台 ================= #  
+# ================= 店家合作 ================= #  
 def show_shop_menu(event):
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage("🏪 店家後台", quick_reply=QuickReply(items=[
+        TextSendMessage("🏪 店家合作", quick_reply=QuickReply(items=[
             QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
             QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
             QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
@@ -750,7 +750,7 @@ def handle_shop_logic(event, user_id, text, db):
         return False
 
     # === 進入後台 ===
-    if text == "店家後台":
+    if text == "店家合作":
         row = db.execute(
             "SELECT shop_id,approved FROM shops WHERE owner_id=?",
             (user_id,)
@@ -889,7 +889,7 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     # === 查看 ===
-    if user_id in ADMIN_IDS and text == "查看店家":
+    if user_id in ADMIN_IDS and text == "查看":
         rows = db.execute("SELECT shop_id,name,open,approved FROM shops").fetchall()
         msg = "🏪 店家列表\n\n"
 
@@ -900,7 +900,7 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     # === 審核 ===
-    if user_id in ADMIN_IDS and text == "店家審核":
+    if user_id in ADMIN_IDS and text == "審核":
         rows = db.execute("SELECT shop_id,name,approved FROM shops").fetchall()
 
         if not rows:
@@ -964,7 +964,7 @@ def handle_admin_logic(event, user_id, text, db):
         return True
 
     # === 刪除 ===
-    if user_id in ADMIN_IDS and text == "店家刪除":
+    if user_id in ADMIN_IDS and text == "刪除":
         rows = db.execute("SELECT shop_id,name FROM shops").fetchall()
 
         if not rows:
@@ -1081,6 +1081,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
