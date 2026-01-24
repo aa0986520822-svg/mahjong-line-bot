@@ -719,6 +719,7 @@ def handle_message(event):
 
        
 # ================= 店家合作 ================= #  
+
 def show_shop_menu(event):
     line_bot_api.reply_message(
         event.reply_token,
@@ -731,12 +732,33 @@ def show_shop_menu(event):
     )
     return True
 
+
 def handle_shop_logic(event, user_id, text, db):
+
+    # === 等待審核優先 ===
+    if user_state.get(user_id, {}).get("mode") == "shop_wait":
+        sid = user_state[user_id]["shop_id"]
+        ap = db.execute(
+            "SELECT approved FROM shops WHERE shop_id=?",
+            (sid,)
+        ).fetchone()
+
+        if ap and ap[0] == 1:
+            user_state[user_id]["mode"] = "shop_menu"
+            return show_shop_menu(event)
+
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("⏳ 尚未審核通過，請稍候管理員審核", quick_reply=back_menu())
+        )
+        return True
+
 
     # === 回主畫面 ===
     if text == "選單":
         user_state.pop(user_id, None)
         return False
+
 
     # === 進入後台 ===
     if text == "店家合作":
@@ -757,14 +779,15 @@ def handle_shop_logic(event, user_id, text, db):
         user_state[user_id] = {"mode": "shop_menu", "shop_id": sid}
 
         if ap == 0:
-            user_state.pop(user_id, None)
+            user_state[user_id]["mode"] = "shop_wait"
             line_bot_api.reply_message(
-               event.reply_token,
+                event.reply_token,
                 TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
             )
             return True
 
         return show_shop_menu(event)
+
 
     # === 新增店家 ===
     if user_state.get(user_id, {}).get("mode") == "shop_input":
@@ -781,36 +804,21 @@ def handle_shop_logic(event, user_id, text, db):
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(f"🏪 {name}\n\n已送出申請，等待審核", quick_reply=back_menu())
+            TextSendMessage(f"🏪 {name}\n\n✅ 已送出申請，等待審核", quick_reply=back_menu())
         )
         return True
 
-    # === 等待審核 ===
-    if user_state.get(user_id, {}).get("mode") == "shop_wait":
-        sid = user_state[user_id]["shop_id"]
-        ap = db.execute(
-            "SELECT approved FROM shops WHERE shop_id=?",
-            (sid,)
-        ).fetchone()
-
-        if ap and ap[0] == 1:
-            user_state[user_id]["mode"] = "shop_menu"
-            return show_shop_menu(event)
-
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage("⏳ 尚未審核", quick_reply=back_menu())
-        )
-        return True
 
     # === 開始營業 ===
     if text == "開始營業":
         sid = get_shop_id_by_user(db, user_id)
         if not sid:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("你尚未綁定店家", quick_reply=back_menu()))
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("你尚未綁定店家", quick_reply=back_menu())
+            )
             return True
-            
+
         db.execute("UPDATE shops SET open=1 WHERE shop_id=?", (sid,))
         db.commit()
 
@@ -821,22 +829,28 @@ def handle_shop_logic(event, user_id, text, db):
         return True
 
 
-# === 今日休息 ===
+    # === 今日休息 ===
     if text == "今日休息":
         sid = get_shop_id_by_user(db, user_id)
         if not sid:
-            line_bot_api.reply_message(event.reply_token,
-                TextSendMessage("你尚未綁定店家", quick_reply=back_menu()))
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("你尚未綁定店家", quick_reply=back_menu())
+            )
             return True
 
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
         db.commit()
-    
+
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("🔴 今日休息", quick_reply=back_menu())
         )
         return True
+
+
+    return False
+
 
 
     # === 設定群組 ===
@@ -1082,6 +1096,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
