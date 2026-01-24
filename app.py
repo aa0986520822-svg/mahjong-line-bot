@@ -644,8 +644,8 @@ def handle_message(event):
         )
         return True
         
-   
-        # ===== 店家地圖 =====
+
+    # ===== 店家地圖 =====
     if text == "店家地圖":
         rows = db.execute("""
             SELECT name, partner_map 
@@ -1096,6 +1096,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
