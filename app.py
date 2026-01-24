@@ -1054,7 +1054,7 @@ def handle_admin_logic(event, user_id, text, db):
 
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage("✅ 已更新合作店家地圖", quick_reply=back_menu())
+            TextSendMessage("✅ 已更新店家地圖", quick_reply=back_menu())
         )
         return True
 
@@ -1066,6 +1066,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
