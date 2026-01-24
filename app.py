@@ -428,10 +428,10 @@ def handle_message(event):
         user_state.setdefault(user_id, {})["amount"] = amount
 
         items = [
-            QuickReplyButton(action=MessageAction(label="1人", text="人數:1")),
-            QuickReplyButton(action=MessageAction(label="2人", text="人數:2")),
-            QuickReplyButton(action=MessageAction(label="3人", text="人數:3")),
-            QuickReplyButton(action=MessageAction(label="4人", text="人數:4")),
+            QuickReplyButton(action=MessageAction(label="我1人", text="人數:1")),
+            QuickReplyButton(action=MessageAction(label="我2人", text="人數:2")),
+            QuickReplyButton(action=MessageAction(label="我3人", text="人數:3")),
+            QuickReplyButton(action=MessageAction(label="我4人", text="人數:4")),
             QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ]
 
@@ -879,10 +879,10 @@ def handle_admin_logic(event, user_id, text, db):
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage("🛠 店家管理", quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="📋 查看店家", text="查看店家")),
-                QuickReplyButton(action=MessageAction(label="✅ 店家審核", text="店家審核")),
-                QuickReplyButton(action=MessageAction(label="🗑 店家刪除", text="店家刪除")),
-                QuickReplyButton(action=MessageAction(label="🗺 合作店家地圖設定", text="地圖設定")),
+                QuickReplyButton(action=MessageAction(label="📋 查看", text="查看")),
+                QuickReplyButton(action=MessageAction(label="✅ 審核", text="審核")),
+                QuickReplyButton(action=MessageAction(label="🗑 刪除", text="刪除")),
+                QuickReplyButton(action=MessageAction(label="🗺 地圖設定", text="地圖設定")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
             ]))
         )
@@ -1081,6 +1081,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
