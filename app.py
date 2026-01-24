@@ -41,16 +41,6 @@ def close_db(e=None):
 def init_db():
     db = get_db()
 
-    db.execute("""
-    CREATE TABLE IF NOT EXISTS shops(
-        shop_id TEXT,
-        name TEXT,
-        open INT,
-        approved INT,
-        group_link TEXT,
-        owner_id TEXT
-    )
-    """)
 
     db.execute("""
     CREATE TABLE IF NOT EXISTS match_users(
@@ -652,44 +642,54 @@ def handle_message(event):
         )
         return True
         
+   
     # ===== 店家地圖 =====
-    if text == "店家地圖":
-        rows = db.execute("""
-            SELECT name, partner_map 
-            FROM shops 
-            WHERE approved=1 AND open=1 AND partner_map IS NOT NULL
-        """).fetchall()
+if text == "店家地圖":
+    rows = db.execute("""
+        SELECT name, partner_map 
+        FROM shops 
+        WHERE approved=1 AND open=1 AND partner_map IS NOT NULL
+    """).fetchall()
 
-        if not rows:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("目前沒有營業中的合作店家", quick_reply=back_menu())
-            )
-            return True
-
-        msg = "🗺 營業中合作店家\n\n"
-        for name, link in rows:
-            if not link.startswith("http"):
-                continue
-
-            items.append(
-                QuickReplyButton(
-                    action=URIAction(label=f"🏪 {name}", uri=link)
-                )
-            )
-
-        items.append(
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
-        )
-    
+    # 沒店家
+    if not rows:
         line_bot_api.reply_message(
             event.reply_token,
             TextSendMessage(
-                "🗺 營業中店家地圖",
-                quick_reply=QuickReply(items=items)
+                "🚫 未有營業店家",
+                quick_reply=back_menu()
             )
         )
         return True
+
+    items = []
+
+    for name, link in rows:
+        if not link:
+            continue
+        if not link.startswith("http"):
+            continue
+
+        items.append(
+            QuickReplyButton(
+                action=URIAction(label=f"🏪 {name}"[:20], uri=link)
+            )
+        )
+
+    # 一定要有回主畫面
+    items.append(
+        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))
+    )
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(
+            "🗺 營業中店家地圖",
+            quick_reply=QuickReply(items=items)
+        )
+    )
+    return True
+
     # ===== 回主選單 =====
     if text == "選單":
         user_state.pop(user_id, None)
@@ -1066,6 +1066,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
