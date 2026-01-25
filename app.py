@@ -783,7 +783,7 @@ def handle_shop_logic(event, user_id, text, db):
 
 
     # ================= 進入店家合作 =================
-if text == "店家合作":
+    if text == "店家合作":
         row = db.execute(
                 "SELECT shop_id, approved FROM shops WHERE owner_id=? ORDER BY rowid DESC",
                 (user_id,),
@@ -1104,6 +1104,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
