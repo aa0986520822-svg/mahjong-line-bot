@@ -177,6 +177,10 @@ def push_table(table_id, title="🀄 桌況更新"):
 
 def try_make_table(shop_id, amount):
     db = get_db()
+        # ✅ 店家若已下線，不允許繼續配桌（避免下線後仍成桌）
+    shop_open = db.execute("SELECT open FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+    if not shop_open or shop_open[0] != 1:
+        return
 
     rows = db.execute("""
         SELECT user_id,people FROM match_users 
@@ -301,6 +305,37 @@ def get_shop_id_by_user(db, user_id):
         (user_id,)
     ).fetchone()
     return row[0] if row else None
+
+def cancel_shop_matching(db, shop_id, reason=None):
+    """
+    店家下線時：
+    1) 取消該店所有 match_users（waiting/ready/confirmed 都清）
+    2) 清掉該店所有 tables
+    3) push 通知所有受影響玩家
+    """
+    row = db.execute("SELECT name FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+    shop_name = row[0] if row else shop_id
+
+    if reason is None:
+        reason = f"⚠️ 店家「{shop_name}」已下線/休息\n系統已自動取消你的配桌\n請重新配桌 ✅"
+
+    users = db.execute(
+        "SELECT user_id FROM match_users WHERE shop_id=?",
+        (shop_id,)
+    ).fetchall()
+    user_ids = [u[0] for u in users]
+
+    # 清掉配桌與桌資料
+    db.execute("DELETE FROM match_users WHERE shop_id=?", (shop_id,))
+    db.execute("DELETE FROM tables WHERE shop_id=?", (shop_id,))
+    db.commit()
+
+    # 通知玩家
+    for uid in user_ids:
+        try:
+            line_bot_api.push_message(uid, TextSendMessage(reason))
+        except Exception as e:
+            print("cancel_shop_matching push error:", e)
 
 
 @app.route("/callback", methods=["POST"])
@@ -873,6 +908,8 @@ def handle_shop_logic(event, user_id, text, db):
 
         db.execute("UPDATE shops SET open=0 WHERE shop_id=?", (sid,))
         db.commit()
+                # ✅ 店家下線：立刻解散該店所有配桌並通知玩家重新配桌
+        cancel_shop_matching(db, sid)
 
         line_bot_api.reply_message(
             event.reply_token,
@@ -1130,4 +1167,5 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
