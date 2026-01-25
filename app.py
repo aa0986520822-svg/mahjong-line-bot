@@ -255,6 +255,16 @@ def push_table(db, table_id, title="🀄 桌況更新"):
 
 
 def try_make_table(db, shop_id, amount):
+        # ✅ 店家下線：強制取消所有該店該金額的配桌
+    shop_open = db.execute("SELECT open FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+    if not shop_open or shop_open[0] != 1:
+        rows2 = db.execute(
+            "SELECT user_id FROM match_users WHERE shop_id=? AND amount=?",
+            (shop_id, amount)
+        ).fetchall()
+        for (uid,) in rows2:
+            force_cancel_matching(db, uid, "⚠️ 店家已下線，系統已自動取消配桌")
+        return
     rows = db.execute("""
         SELECT user_id,people FROM match_users 
         WHERE shop_id=? AND amount=? AND status='waiting'
@@ -342,6 +352,86 @@ def check_confirm(db, table_id):
     db.execute("DELETE FROM tables WHERE id=?", (table_id,))
     db.commit()
 
+def force_cancel_matching(db, user_id, reason="⚠️ 店家已下線，已自動取消配桌"):
+    row = db.execute("""
+        SELECT shop_id, amount, table_id, status
+        FROM match_users
+        WHERE user_id=?
+    """, (user_id,)).fetchone()
+
+    if not row:
+        user_state.pop(user_id, None)
+        return False
+
+    shop_id, amount, table_id, status = row
+
+    db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+
+    if table_id:
+        db.execute("""
+            UPDATE match_users
+            SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL
+            WHERE table_id=?
+        """, (table_id,))
+
+    db.commit()
+    user_state.pop(user_id, None)
+
+    try:
+        try_make_table(db, shop_id, amount)
+    except Exception as e:
+        print("force_cancel try_make_table error:", e)
+
+    try:
+        line_bot_api.push_message(user_id, TextSendMessage(reason))
+    except Exception as e:
+        print("force_cancel push error:", e)
+
+    return True
+    
+def force_cancel_matching(db, user_id, reason="⚠️ 店家已下線，已自動取消配桌"):
+    row = db.execute("""
+        SELECT shop_id, amount, table_id, status
+        FROM match_users
+        WHERE user_id=?
+    """, (user_id,)).fetchone()
+
+    # 沒有配桌紀錄就不用取消
+    if not row:
+        user_state.pop(user_id, None)
+        return False
+
+    shop_id, amount, table_id, status = row
+
+    # 刪掉本人配桌
+    db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
+
+    # 如果是 ready/confirmed，還要把同桌的人退回 waiting
+    if table_id:
+        db.execute("""
+            UPDATE match_users
+            SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL
+            WHERE table_id=?
+        """, (table_id,))
+
+    db.commit()
+
+    # 清掉暫存狀態
+    user_state.pop(user_id, None)
+
+    # 重新湊桌（只針對原店家同金額）
+    try:
+        try_make_table(db, shop_id, amount)
+    except Exception as e:
+        print("force_cancel try_make_table error:", e)
+
+    # 通知玩家
+    try:
+        line_bot_api.push_message(user_id, TextSendMessage(reason))
+    except Exception as e:
+        print("force_cancel push error:", e)
+
+    return True
 
 # -------------------------
 # Timeout checker (thread-safe)
@@ -785,11 +875,20 @@ def handle_message(event):
             return
 
         name, amount, people, status = row
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(f"📌 配桌狀態\n\n🏪 {name}\n💰 {amount}\n👥 {people} 人\n📍 {status}", quick_reply=back_menu())
-        )
+        # ✅ 店家下線就強制取消
+    if open_ != 1:
+        force_cancel_matching(db, user_id, f"⚠️ 店家「{name}」已下線/休息\n已自動取消配桌，請重新選擇店家")
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(
+            f"📌 配桌狀態\n\n🏪 {name}\n💰 {amount}\n👥 {people} 人\n📍 {status}",
+            quick_reply=back_menu()
+        )
+    )
+    return
 
     if text.startswith("店家:"):
         shop_id = text.split(":", 1)[1]
@@ -1027,4 +1126,5 @@ if __name__ == "__main__":
     threading.Thread(target=timeout_checker, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000)
+
 
