@@ -789,13 +789,13 @@ if text == "店家合作":
                 (user_id,),
             ).fetchone()
 
-            if not row:
-                user_state[user_id] = {"mode": "shop_input"}
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
-                )
-                return True
+        if not row:
+            user_state[user_id] = {"mode": "shop_input"}
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
+            )
+            return True
 
             sid, ap = row
 
@@ -1104,6 +1104,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
