@@ -783,37 +783,44 @@ def handle_shop_logic(event, user_id, text, db):
 
 
     # ================= 進入店家合作 =================
-    if text == "店家合作":
+if text == "店家合作":
         row = db.execute(
-            "SELECT shop_id,approved FROM shops WHERE owner_id=?",
-            (user_id,)
-        ).fetchone()
+                "SELECT shop_id, approved FROM shops WHERE owner_id=? ORDER BY rowid DESC",
+                (user_id,),
+            ).fetchone()
 
-        if not row:
-            user_state[user_id] = {"mode": "shop_input"}
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
-            )
-            return True
+            if not row:
+                user_state[user_id] = {"mode": "shop_input"}
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
+                )
+                return True
 
-        sid, ap = row
-        user_state[user_id] = {"mode": "shop_menu", "shop_id": sid}
+            sid, ap = row
 
-        if ap == 0:
-            user_state[user_id]["mode"] = "shop_wait"
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
-            )
-            return True
+            user_state[user_id] = {
+                "mode": "shop_menu" if ap == 1 else "shop_wait",
+                "shop_id": sid
+            }
 
-        return show_shop_menu(event)
+            if ap == 0:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
+                )
+                return True
+
+            return show_shop_menu(event)
 
 
     # ================= 開始營業 =================
     if text == "開始營業":
-        sid = get_shop_id_by_user(db, user_id)
+        sid = user_state.get(user_id, {}).get("shop_id")
+
+        if not sid:
+            sid = get_shop_id_by_user(db, user_id)
+
         if not sid:
             line_bot_api.reply_message(
                 event.reply_token,
@@ -830,10 +837,13 @@ def handle_shop_logic(event, user_id, text, db):
         )
         return True
 
-
     # ================= 今日休息 =================
     if text == "今日休息":
-        sid = get_shop_id_by_user(db, user_id)
+        sid = user_state.get(user_id, {}).get("shop_id")
+
+        if not sid:
+            sid = get_shop_id_by_user(db, user_id)
+
         if not sid:
             line_bot_api.reply_message(
                 event.reply_token,
@@ -849,6 +859,7 @@ def handle_shop_logic(event, user_id, text, db):
             TextSendMessage("🔴 今日休息", quick_reply=back_menu())
         )
         return True
+
 
     # === 設定群組 ===
     if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
@@ -1093,6 +1104,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
