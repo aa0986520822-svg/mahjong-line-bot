@@ -737,6 +737,14 @@ def handle_shop_logic(event, user_id, text, db):
 
     mode = user_state.get(user_id, {}).get("mode")
 
+def get_shop_id_by_user(db, user_id):
+    row = db.execute(
+        "SELECT shop_id FROM shops WHERE owner_id=? ORDER BY rowid DESC",
+        (user_id,)
+    ).fetchone()
+    return row[0] if row else None
+
+
     # ================= 新增店家名稱 =================
     if mode == "shop_input":
         name = text
@@ -784,34 +792,39 @@ def handle_shop_logic(event, user_id, text, db):
 
     # ================= 進入店家合作 =================
     if text == "店家合作":
+        # 強制重置亂掉的 state
+        user_state.pop(user_id, None)
+
         row = db.execute(
-                "SELECT shop_id, approved FROM shops WHERE owner_id=? ORDER BY rowid DESC",
-                (user_id,),
-            ).fetchone()
+            "SELECT shop_id, approved FROM shops WHERE owner_id=? ORDER BY rowid DESC",
+            (user_id,),
+        ).fetchone()
 
-        if not row:
-            user_state[user_id] = {"mode": "shop_input"}
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
-            )
-            return True
+    # 尚未申請
+    if not row:
+        user_state[user_id] = {"mode": "shop_input"}
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("請輸入店家名稱", quick_reply=back_menu())
+        )
+        return True
 
-            sid, ap = row
+    sid, ap = row
+    user_state[user_id] = {
+        "mode": "shop_menu" if ap == 1 else "shop_wait",
+        "shop_id": sid
+    }
 
-            user_state[user_id] = {
-                "mode": "shop_menu" if ap == 1 else "shop_wait",
-                "shop_id": sid
-            }
+    # 尚未審核
+    if ap == 0:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("⏳ 尚未審核通過，請等待管理員審核", quick_reply=back_menu())
+        )
+        return True
 
-            if ap == 0:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage("⏳ 尚未審核通過", quick_reply=back_menu())
-                )
-                return True
+    return show_shop_menu(event)
 
-            return show_shop_menu(event)
 
 
     # ================= 開始營業 =================
@@ -977,6 +990,12 @@ def handle_admin_logic(event, user_id, text, db):
 
         if text == "同意審核":
             db.execute("UPDATE shops SET approved=1 WHERE shop_id=?", (sid,))
+
+            # ✅ 清掉申請者卡死狀態
+            row = db.execute("SELECT owner_id FROM shops WHERE shop_id=?", (sid,)).fetchone()
+            if row:
+                user_state.pop(row[0], None)
+
         elif text == "不同意審核":
             db.execute("UPDATE shops SET approved=0 WHERE shop_id=?", (sid,))
 
@@ -1104,6 +1123,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
