@@ -947,20 +947,35 @@ def handle_message(event):
         return
 
     if text == "加入":
-        row = db.execute("SELECT table_id FROM match_users WHERE user_id=? AND status='ready'", (user_id,)).fetchone()
+        row = db.execute("""
+            SELECT match_users.table_id, match_users.shop_id, shops.name, shops.open
+            FROM match_users
+            JOIN shops ON match_users.shop_id = shops.shop_id
+            WHERE match_users.user_id=? AND match_users.status='ready'
+        """, (user_id,)).fetchone()
+
         if not row:
             line_bot_api.reply_message(event.reply_token, main_menu(user_id))
             return
 
-        table_id = row[0]
-        db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
-        db.commit()
+    table_id, shop_id, shop_name, open_ = row
 
-        push_table(db, table_id, "✅ 有玩家加入")
-        check_confirm(db, table_id)
-
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
+    if open_ != 1:
+        force_cancel_matching(db, user_id, f"⚠️ 店家「{shop_name}」已下線\n已自動取消配桌")
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
+
+    db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
+    db.commit()
+
+    push_table(db, table_id, "✅ 有玩家加入")
+    check_confirm(db, table_id)
+
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage("✅ 已確認加入", quick_reply=back_menu())
+    )
+    return
 
     if text == "放棄":
         row = db.execute("SELECT shop_id,amount,table_id FROM match_users WHERE user_id=?", (user_id,)).fetchone()
@@ -1126,5 +1141,6 @@ if __name__ == "__main__":
     threading.Thread(target=timeout_checker, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
