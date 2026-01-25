@@ -79,7 +79,7 @@ def init_db():
         shop_id TEXT,
         name TEXT,
         open INT,
-        approved INT,ㄇㄇ
+        approved INT,
         group_link TEXT,
         owner_id TEXT,
         partner_map TEXT
@@ -850,12 +850,6 @@ def handle_shop_logic(event, user_id, text, db):
         )
         return True
 
-
-    return False
-
-
-
-
     # === 設定群組 ===
     if text == "設定群組" and user_state.get(user_id, {}).get("shop_id"):
         user_state[user_id]["mode"] = "shop_set_group"
@@ -1099,6 +1093,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
