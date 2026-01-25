@@ -295,6 +295,13 @@ def timeout_checker():
 
 threading.Thread(target=timeout_checker, daemon=True).start()
 
+def get_shop_id_by_user(db, user_id):
+    row = db.execute(
+        "SELECT shop_id FROM shops WHERE owner_id=? ORDER BY rowid DESC",
+        (user_id,)
+    ).fetchone()
+    return row[0] if row else None
+
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -737,12 +744,6 @@ def handle_shop_logic(event, user_id, text, db):
 
     mode = user_state.get(user_id, {}).get("mode")
 
-def get_shop_id_by_user(db, user_id):
-    row = db.execute(
-        "SELECT shop_id FROM shops WHERE owner_id=? ORDER BY rowid DESC",
-        (user_id,)
-    ).fetchone()
-    return row[0] if row else None
 
 
     # ================= 新增店家名稱 =================
@@ -1123,6 +1124,7 @@ if __name__ == "__main__":
         init_db()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
