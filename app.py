@@ -978,8 +978,13 @@ def handle_message(event):
     if text == "清除紀錄":
         db.execute("DELETE FROM notes WHERE user_id=?", (user_id,))
         db.commit()
-        line_bot
-            # -------------------------
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage("🧹 已清除所有紀錄", quick_reply=back_menu())
+        )
+        return
+
+    # -------------------------
     # 店家地圖
     # -------------------------
     if text == "店家地圖":
@@ -1022,3 +1027,4 @@ if __name__ == "__main__":
     threading.Thread(target=timeout_checker, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000)
+
