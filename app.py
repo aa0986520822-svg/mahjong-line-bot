@@ -1130,8 +1130,10 @@ def handle_message(event):
         )
         return
 
-    # 最後兜底：未知指令回主選單
+   =================
+    # 走到這裡代表前面都沒命中任何功能（不是按鈕/不是指令）
     line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+    return True
 
 
 # -------------------------
@@ -1145,6 +1147,7 @@ if __name__ == "__main__":
     threading.Thread(target=timeout_checker, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
