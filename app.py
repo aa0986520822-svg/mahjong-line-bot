@@ -524,7 +524,9 @@ def handle_shop_logic(event, user_id, text, db):
         return True
 
     # 進入店家合作
+        # ================= 進入店家合作 =================
     if text == "店家合作":
+        # 強制重置亂掉的 state
         user_state.pop(user_id, None)
 
         row = db.execute(
@@ -532,7 +534,7 @@ def handle_shop_logic(event, user_id, text, db):
             (user_id,),
         ).fetchone()
 
-        # 尚未申請
+        # ✅ 尚未申請（縮排要在裡面）
         if not row:
             user_state[user_id] = {"mode": "shop_input"}
             line_bot_api.reply_message(
@@ -547,6 +549,7 @@ def handle_shop_logic(event, user_id, text, db):
             "shop_id": sid
         }
 
+        # 尚未審核
         if ap == 0:
             line_bot_api.reply_message(
                 event.reply_token,
@@ -555,6 +558,7 @@ def handle_shop_logic(event, user_id, text, db):
             return True
 
         return show_shop_menu(event)
+
 
     # 新增店家名稱
     if mode == "shop_input":
@@ -1141,6 +1145,7 @@ if __name__ == "__main__":
     threading.Thread(target=timeout_checker, daemon=True).start()
 
     app.run(host="0.0.0.0", port=5000)
+
 
 
 
