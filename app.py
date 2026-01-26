@@ -100,14 +100,40 @@ def get_nickname(db, user_id):
         return row["nickname"]
     return f"玩家{user_id[-4:]}"
 
-def main_menu():
-    return TextSendMessage(
-        "請選擇功能",
-        quick_reply=QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="🏪 店家配桌", text="店家配桌")),
-            QuickReplyButton(action=MessageAction(label="👤 設定暱稱", text="設定暱稱")),
-            QuickReplyButton(action=MessageAction(label="🤝 店家合作", text="店家合作")),
-        ])
+def main_menu(user_id=None, page=1):
+    """主選單：一頁三個功能 + 翻頁（用 ButtonsTemplate，私訊最穩）"""
+    is_admin = (user_id in ADMIN_IDS) if user_id else False
+
+    if page == 2:
+        actions = [
+            MessageAction(label="🗺 地圖", text="地圖"),
+            MessageAction(label="🤝 店家合作", text="店家合作"),
+            MessageAction(label="🛠 管理", text="管理") if is_admin else MessageAction(label="◀ 上一頁", text="上一頁"),
+        ]
+        # 若非管理員，第三顆已被「上一頁」用掉，補上「◀ 上一頁」到第四顆不需要
+        # 統一加上一顆返回
+        if is_admin:
+            actions.append(MessageAction(label="◀ 上一頁", text="上一頁"))
+        title = "請選擇功能（2/2）"
+    else:
+        actions = [
+            MessageAction(label="🏪 店家配桌", text="店家配桌"),
+            MessageAction(label="📒 記事本", text="記事本"),
+            MessageAction(label="👤 暱稱", text="設定暱稱"),
+            MessageAction(label="▶ 下一頁", text="下一頁"),
+        ]
+        title = "請選擇功能（1/2）"
+
+    # ButtonsTemplate actions 最多 4 個
+    actions = actions[:4]
+
+    return TemplateSendMessage(
+        alt_text="主選單",
+        template=ButtonsTemplate(
+            title=title,
+            text="請點選下方按鈕",
+            actions=actions
+        )
     )
 
 def shop_menu():
@@ -398,8 +424,43 @@ def handle_message(event):
         # ---- 主選單 ----
         if text in ("選單", "menu", "主選單"):
             user_state.pop(user_id, None)
-            line_bot_api.reply_message(event.reply_token, main_menu())
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id, 1))
             return
+
+        # ---- 翻頁選單 ----
+        if text == "下一頁":
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id, 2))
+            return
+
+        if text == "上一頁":
+            line_bot_api.reply_message(event.reply_token, main_menu(user_id, 1))
+            return
+
+
+        # ---- 其他功能（尚未啟用可先回覆提示）----
+        if text == "記事本":
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("📒 記事本功能尚未啟用", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+            ])))
+            return
+
+        if text == "地圖":
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("🗺 地圖功能尚未啟用", quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+            ])))
+            return
+
+        if text == "管理":
+            if user_id not in ADMIN_IDS:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("你沒有管理權限", quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+                ])))
+            else:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("🛠 管理功能尚未啟用", quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+                ])))
+            return
+
 
         # ---- 暱稱設定（獨立）----
         if text == "設定暱稱":
@@ -531,7 +592,7 @@ def handle_message(event):
         if text == "加入":
             row = db.execute("SELECT table_id FROM match_users WHERE user_id=? AND status='ready'", (user_id,)).fetchone()
             if not row:
-                line_bot_api.reply_message(event.reply_token, main_menu())
+                line_bot_api.reply_message(event.reply_token, main_menu(user_id, 1))
                 return
             table_id = row["table_id"]
             db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
@@ -627,7 +688,7 @@ def handle_message(event):
             return
 
         # fallback
-        line_bot_api.reply_message(event.reply_token, main_menu())
+        line_bot_api.reply_message(event.reply_token, main_menu(user_id, 1))
 
 # ---- Render 啟動 ----
 if __name__ == "__main__":
