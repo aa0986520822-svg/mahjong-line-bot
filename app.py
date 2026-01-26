@@ -1,9 +1,15 @@
+def back_menu():
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
+    ])
+
 import os, sqlite3, threading, time, re
 from datetime import datetime, timedelta
 from flask import Flask, request, abort, g
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
+    URIAction,
     MessageEvent, TextMessage, TextSendMessage,
     QuickReply, QuickReplyButton, MessageAction,
     TemplateSendMessage, ButtonsTemplate
@@ -93,6 +99,14 @@ def init_db():
     )
     """)
     db.commit()
+
+    # 向後相容：舊資料庫沒有 partner_map 時補欄位
+    try:
+        db.execute("ALTER TABLE shops ADD COLUMN partner_map TEXT")
+        db.commit()
+    except Exception:
+        pass
+
 
 def get_nickname(db, user_id):
     row = db.execute("SELECT nickname FROM nicknames WHERE user_id=?", (user_id,)).fetchone()
@@ -222,13 +236,9 @@ def send_confirm_buttons_push(user_id, table_index, amount):
 
 
 
-def try_make_table(db, shop_id, amount, reply_token=None, trigger_user_id=None):
-    """
-    湊滿4人後：
-    - 產生 table
-    - 全員 status=ready, expire=now+30
-    - 觸發者用 reply(最穩顯示按鈕)，其他人用 push
-    """
+def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
+    db = get_db()
+
     rows = db.execute("""
         SELECT user_id, people FROM match_users
         WHERE shop_id=? AND amount=? AND status='waiting'
@@ -236,13 +246,13 @@ def try_make_table(db, shop_id, amount, reply_token=None, trigger_user_id=None):
     """, (shop_id, amount)).fetchall()
 
     total = 0
-    picked = []
-    for r in rows:
-        p = int(r["people"])
+    selected = []
+    for uid, p in rows:
+        p = int(p)
         if total + p > 4:
             continue
         total += p
-        picked.append(r["user_id"])
+        selected.append(uid)
         if total == 4:
             break
 
@@ -251,40 +261,43 @@ def try_make_table(db, shop_id, amount, reply_token=None, trigger_user_id=None):
 
     table_id = f"{shop_id}_{int(time.time()*1000)}"
     expire = time.time() + COUNTDOWN_READY
-    table_index = get_next_table_index(db, shop_id)
+    table_index = get_next_table_index(shop_id)
 
-    db.execute("INSERT INTO tables(id, shop_id, amount, table_index) VALUES(?,?,?,?)",
-               (table_id, shop_id, amount, table_index))
-    for uid in picked:
+    db.execute("INSERT INTO tables VALUES(?,?,?,?)", (table_id, shop_id, amount, table_index))
+
+    for uid in selected:
         db.execute("""
             UPDATE match_users
             SET status='ready', expire=?, table_id=?, table_index=?
             WHERE user_id=?
         """, (expire, table_id, table_index, uid))
+
     db.commit()
 
-    # 桌況先推
-    push_table(db, table_id, "🪑 桌子成立")
+    msg = (
+        "🎉 成桌確認\n"
+        f"🪑 桌號：{table_index}\n"
+        f"💰 金額：{amount}\n\n"
+        f"⏱ {COUNTDOWN_READY} 秒內未確認視同放棄"
+    )
 
-    # 成桌提醒（按鈕）
-    for uid in picked:
+    qr = QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+        QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+        QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+    ])
+
+    for uid in selected:
         try:
             if reply_token and trigger_user_id and uid == trigger_user_id:
-                # ✅ 觸發者用 reply：私訊最穩、一定顯示按鈕
-                send_confirm_buttons_reply(reply_token, table_index, amount)
+                line_bot_api.reply_message(reply_token, TextSendMessage(msg, quick_reply=qr))
             else:
-                send_confirm_buttons_push(uid, table_index, amount)
+                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=qr))
         except Exception as e:
-            print("send_confirm_buttons error:", e)
-            # 失敗就退而求其次，至少給文字指令
-            try:
-                line_bot_api.push_message(uid, TextSendMessage(
-                    f"🎉 成桌確認\n桌號：{table_index}\n請輸入「加入」或「放棄」\n⏱ {COUNTDOWN_READY}秒內未確認視同放棄"
-                ))
-            except Exception as e2:
-                print("fallback text error:", e2)
+            print("confirm push error:", e)
 
-    return {"table_id": table_id, "table_index": table_index}
+    push_table(table_id, "🪑 桌子成立（等待確認）")
+    return table_id
 
 def check_confirm(db, table_id):
     rows = db.execute("""
@@ -754,7 +767,29 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage("🚪 已取消配桌", quick_reply=back_qr()))
             return
 
-        # ---- 店家合作（簡化版）----
+        
+if text.startswith("地圖:"):
+    sid = text.split(":", 1)[1].strip()
+    row = db.execute("SELECT name, partner_map FROM shops WHERE shop_id=? AND open=1 AND approved=1", (sid,)).fetchone()
+    if not row or not (row["partner_map"] or "").strip():
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("此店家尚未設定地圖連結", quick_reply=back_menu()))
+        return True
+
+    name = row["name"] or "店家"
+    link = row["partner_map"].strip()
+    line_bot_api.reply_message(
+        event.reply_token,
+        TextSendMessage(
+            f"🗺 {name} 地圖\n{link}",
+            quick_reply=QuickReply(items=[
+                QuickReplyButton(action=URIAction(label="📍 開啟地圖", uri=link)),
+                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+            ])
+        )
+    )
+    return True
+
+# ---- 店家合作（簡化版）----
         if text == "店家合作":
             row = db.execute("SELECT shop_id, approved FROM shops WHERE owner_id=? ORDER BY shop_id DESC", (user_id,)).fetchone()
             if not row:
