@@ -191,7 +191,7 @@ def build_table_status_msg(db, table_id, title="🀄 桌況更新"):
     return msg.strip()
 
 
-def push_table(table_id, title="🀄 桌況更新", quick_reply=None):
+def push_table(table_id, title="🀄 桌況更新"):
     with app.app_context():
         db = get_db()
         msg = build_table_status_msg(db, table_id, title)
@@ -199,37 +199,19 @@ def push_table(table_id, title="🀄 桌況更新", quick_reply=None):
             return
         for uid in get_table_users(db, table_id):
             try:
-                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=quick_reply or back_menu()))
+                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
             except Exception as e:
                 print("push_table error:", e)
 
 
 def notify_table(table_id, text):
-    # 若桌子還在「待確認(ready)」階段，提醒訊息也要帶「加入/放棄」按鍵，
-    # 否則 LINE 會用最新一則訊息的 quick reply 覆蓋掉按鍵，使用者就看不到。
     with app.app_context():
         db = get_db()
-
-        # 判斷是否仍需要顯示加入/放棄按鍵
-        has_ready = db.execute(
-            "SELECT 1 FROM match_users WHERE table_id=? AND status='ready' LIMIT 1",
-            (table_id,)
-        ).fetchone()
-
-        qr = None
-        if has_ready:
-            qr = QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
-                QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-            ])
-
         for uid in get_table_users(db, table_id):
             try:
-                line_bot_api.push_message(uid, TextSendMessage(text, quick_reply=qr or back_menu()))
+                line_bot_api.push_message(uid, TextSendMessage(text, quick_reply=back_menu()))
             except Exception as e:
                 print("notify_table error:", e)
-
 
 
 def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
@@ -295,7 +277,7 @@ def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
         except Exception as e:
             print("confirm push error:", e)
 
-    push_table(table_id, "🪑 桌子成立（等待確認）", quick_reply=qr)
+    push_table(table_id, "🪑 桌子成立（等待確認）")
     return table_id
 
 
@@ -563,16 +545,17 @@ def handle_message(event):
     if text == "設定暱稱":
         cur = get_nickname(db, user_id)
         cur_show = cur if cur else "（尚未設定）"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(
-            f"🏷 暱稱設定
-
-目前暱稱：{cur_show}",
-            quick_reply=QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="➕ 新增暱稱", text="新增暱稱")),
-                QuickReplyButton(action=MessageAction(label="✏️ 修改暱稱", text="修改暱稱")),
-                QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
-            ])
-        ))
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(
+                f"🏷 暱稱設定\n\n目前暱稱：{cur_show}",
+                quick_reply=QuickReply(items=[
+                    QuickReplyButton(action=MessageAction(label="➕ 新增暱稱", text="新增暱稱")),
+                    QuickReplyButton(action=MessageAction(label="✏️ 修改暱稱", text="修改暱稱")),
+                    QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+                ])
+            )
+        )
         return
 
     if text in ("新增暱稱", "修改暱稱"):
@@ -591,7 +574,6 @@ def handle_message(event):
         if len(nk) > 5:
             line_bot_api.reply_message(event.reply_token, TextSendMessage("暱稱最多 5 個字，請重新輸入", quick_reply=back_menu()))
             return
-
         db.execute("INSERT OR REPLACE INTO nicknames(user_id, nickname) VALUES(?,?)", (user_id, nk))
         db.commit()
         user_state.pop(user_id, None)
