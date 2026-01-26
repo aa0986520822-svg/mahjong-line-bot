@@ -100,6 +100,10 @@ def get_nickname(db, user_id):
         return row["nickname"]
     return f"玩家{user_id[-4:]}"
 
+
+def back_qr():
+    return QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])
+
 def main_menu(user_id=None):
     items = [
         QuickReplyButton(action=MessageAction(label="🏪 店家配桌", text="店家配桌")),
@@ -118,7 +122,8 @@ def shop_menu():
             QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
             QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
             QuickReplyButton(action=MessageAction(label="🔗 設定群組連結", text="設定群組")),
-            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            QuickReplyButton(action=MessageAction(label="🔍 查看進度", text="查看進度")),
+                            QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
         ])
     )
 
@@ -182,18 +187,19 @@ def send_confirm_buttons_reply(reply_token, table_index, amount):
         f"💰 金額：{amount}\n\n"
         f"⏱ {COUNTDOWN_READY} 秒內未確認視同放棄"
     )
-    buttons = TemplateSendMessage(
-        alt_text="成桌確認",
-        template=ButtonsTemplate(
-            title="成桌確認",
-            text=msg[:160],
-            actions=[
-                MessageAction(label="✅ 加入", text="加入"),
-                MessageAction(label="❌ 放棄", text="放棄"),
-            ],
-        ),
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(
+            msg,
+            quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+                QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            ])
+        )
     )
-    line_bot_api.reply_message(reply_token, buttons)
+
+
 
 def send_confirm_buttons_push(user_id, table_index, amount):
     msg = (
@@ -202,18 +208,19 @@ def send_confirm_buttons_push(user_id, table_index, amount):
         f"💰 金額：{amount}\n\n"
         f"⏱ {COUNTDOWN_READY} 秒內未確認視同放棄"
     )
-    buttons = TemplateSendMessage(
-        alt_text="成桌確認",
-        template=ButtonsTemplate(
-            title="成桌確認",
-            text=msg[:160],
-            actions=[
-                MessageAction(label="✅ 加入", text="加入"),
-                MessageAction(label="❌ 放棄", text="放棄"),
-            ],
-        ),
+    line_bot_api.push_message(
+        user_id,
+        TextSendMessage(
+            msg,
+            quick_reply=QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+                QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+                QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+            ])
+        )
     )
-    line_bot_api.push_message(user_id, buttons)
+
+
 
 def try_make_table(db, shop_id, amount, reply_token=None, trigger_user_id=None):
     """
@@ -449,6 +456,7 @@ def handle_message(event):
                         QuickReplyButton(action=MessageAction(label="📋 查看店家", text="管理:查看")),
                         QuickReplyButton(action=MessageAction(label="✅ 審核店家", text="管理:審核")),
                         QuickReplyButton(action=MessageAction(label="🗑 刪除店家", text="管理:刪除")),
+                        QuickReplyButton(action=MessageAction(label="🗺 地圖設定", text="管理:地圖設定")),
                         QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
                     ])
                 )
@@ -533,6 +541,81 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage("🗑 已刪除店家", quick_reply=QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])))
             return
 # ---- 店家配桌 ----
+
+
+        # ---- 管理：地圖設定 ----
+        if text == "管理:地圖設定":
+            if user_id not in ADMIN_IDS:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("你沒有管理權限", quick_reply=back_qr()))
+                return
+            rows = db.execute("SELECT shop_id,name FROM shops WHERE approved=1 ORDER BY rowid DESC").fetchall()
+            if not rows:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有已核准店家", quick_reply=back_qr()))
+                return
+            items = []
+            for r in rows:
+                items.append(QuickReplyButton(action=MessageAction(label=(r["name"] or "")[:20], text=f"管理:地圖:{r['shop_id']}")))
+            items.append(QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")))
+            user_state[user_id] = {"mode": "admin_map_select"}
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("選擇要設定地圖的店家", quick_reply=QuickReply(items=items)))
+            return
+
+        if text.startswith("管理:地圖:") and user_id in ADMIN_IDS:
+            sid = text.split(":", 2)[2]
+            user_state[user_id] = {"mode": "admin_map_input", "sid": sid}
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("請貼上地圖連結（Google Map 連結）", quick_reply=back_qr()))
+            return
+
+        if user_state.get(user_id, {}).get("mode") == "admin_map_input" and user_id in ADMIN_IDS:
+            sid = user_state[user_id]["sid"]
+            db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (text.strip(), sid))
+            db.commit()
+            user_state.pop(user_id, None)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已更新地圖連結", quick_reply=back_qr()))
+            return
+
+        # ---- 查看進度 ----
+        if text == "查看進度":
+            row = db.execute(
+                """
+                SELECT m.shop_id, m.amount, m.people, m.status, m.table_id, m.table_index,
+                       COALESCE(s.name,'未知店家') AS shop_name
+                FROM match_users m
+                LEFT JOIN shops s ON m.shop_id = s.shop_id
+                WHERE m.user_id=?
+                """,
+                (user_id,)
+            ).fetchone()
+
+            if not row:
+                line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+                return
+
+            msg = (
+                "📌 配桌進度\n\n"
+                f"🏪 店家：{row['shop_name']}\n"
+                f"💰 金額：{row['amount']}\n"
+                f"👥 人數：{row['people']}\n"
+                f"📍 狀態：{row['status']}"
+            )
+            if row["table_id"]:
+                status_msg = build_table_status_msg(db, row["table_id"], title="🪑 桌況")
+                if status_msg:
+                    msg += "\n\n" + status_msg
+
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(
+                    msg,
+                    quick_reply=QuickReply(items=[
+                        QuickReplyButton(action=MessageAction(label="🔄 重新整理", text="查看進度")),
+                        QuickReplyButton(action=MessageAction(label="🚪 取消配桌", text="取消配桌")),
+                        QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
+                    ])
+                )
+            )
+            return
+
         if text == "店家配桌":
             # 已經在配桌 / 成桌中
             row = db.execute("SELECT status FROM match_users WHERE user_id=?", (user_id,)).fetchone()
@@ -644,7 +727,7 @@ def handle_message(event):
             push_table(db, table_id, "✅ 有玩家加入")
             if check_confirm(db, table_id):
                 return
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_qr()))
             return
 
         if text == "放棄":
@@ -662,13 +745,13 @@ def handle_message(event):
                     push_table(db, table_id, "❌ 有玩家放棄（繼續等待補人）")
                 except:
                     pass
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄，已退回等待池"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄，已退回等待池", quick_reply=back_qr()))
             return
 
         if text == "取消配桌":
             db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
             db.commit()
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("🚪 已取消配桌"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("🚪 已取消配桌", quick_reply=back_qr()))
             return
 
         # ---- 店家合作（簡化版）----
@@ -734,10 +817,26 @@ def handle_message(event):
         
         # ---- 店家地圖（列表版，確保有回應）----
         if text == "店家地圖":
-            shops = db.execute("SELECT name, shop_id FROM shops WHERE open=1 AND approved=1").fetchall()
-            if not shops:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有營業店家", quick_reply=QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])))
+            rows = db.execute("SELECT name, shop_id, partner_map FROM shops WHERE open=1 AND approved=1").fetchall()
+
+            if not rows:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有營業的店家", quick_reply=back_qr()))
                 return
+
+            has_map = any((r["partner_map"] or "").strip() for r in rows)
+            if not has_map:
+                line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有營業的店家", quick_reply=back_qr()))
+                return
+
+            msg = "🗺 店家地圖\n\n"
+            for r in rows:
+                link = (r["partner_map"] or "").strip()
+                if not link:
+                    continue
+                msg += f"🏪 {r['name']}\n🔗 {link}\n\n"
+
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(msg.strip(), quick_reply=back_qr()))
+            return
             msg = "🗺 營業店家列表\n\n"
             for s in shops:
                 msg += f"🏪 {s['name']}\nID: {s['shop_id']}\n\n"
