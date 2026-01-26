@@ -121,7 +121,6 @@ def confirm_menu():
     ])
 
 
-
 def get_nickname(db, user_id):
     row = db.execute("SELECT nickname FROM nicknames WHERE user_id=?", (user_id,)).fetchone()
     return row["nickname"] if row and row["nickname"] else None
@@ -206,27 +205,37 @@ def push_table(table_id, title="🀄 桌況更新"):
         msg = build_table_status_msg(db, table_id, title)
         if not msg:
             return
-        rows = db.execute("SELECT user_id, status FROM match_users WHERE table_id=?", (table_id,)).fetchall()
-        for r in rows:
-            uid = r["user_id"]
-            st = r["status"]
-            qr = confirm_menu() if st == "ready" else back_menu()
+
+        # 若桌子正在「等待確認」，要保留加入/放棄按鍵（避免被後續訊息洗掉）
+        has_ready = db.execute(
+            "SELECT 1 FROM match_users WHERE table_id=? AND status='ready' LIMIT 1",
+            (table_id,),
+        ).fetchone() is not None
+        qr = confirm_menu() if has_ready else back_menu()
+
+        for uid in get_table_users(db, table_id):
             try:
                 line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=qr))
             except Exception as e:
                 print("push_table error:", e)
 
+
 def notify_table(table_id, text):
     with app.app_context():
         db = get_db()
-        rows = db.execute("SELECT user_id, status FROM match_users WHERE table_id=?", (table_id,)).fetchall()
-        for r in rows:
-            uid = r["user_id"]
-            qr = confirm_menu() if r["status"] == "ready" else back_menu()
+
+        has_ready = db.execute(
+            "SELECT 1 FROM match_users WHERE table_id=? AND status='ready' LIMIT 1",
+            (table_id,),
+        ).fetchone() is not None
+        qr = confirm_menu() if has_ready else back_menu()
+
+        for uid in get_table_users(db, table_id):
             try:
                 line_bot_api.push_message(uid, TextSendMessage(text, quick_reply=qr))
             except Exception as e:
                 print("notify_table error:", e)
+
 
 def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
     db = get_db()
@@ -335,12 +344,7 @@ def handle_abandon(user_id):
     amount = row["amount"]
     table_id = row["table_id"]
 
-    if table_id:
-        # 先抓同桌其他人（扣掉自己），用來通知
-        others = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND user_id<>?", (table_id, user_id)).fetchall()
-        other_ids = [o["user_id"] for o in others]
-
-    # 刪除放棄者（放棄者視同取消配桌）
+    # 刪除放棄者
     db.execute("DELETE FROM match_users WHERE user_id=?", (user_id,))
     db.commit()
 
@@ -350,17 +354,12 @@ def handle_abandon(user_id):
         db.execute("DELETE FROM tables WHERE id=?", (table_id,))
         db.commit()
 
-        # 通知其餘玩家有人放棄，繼續等待
-        for uid in other_ids:
-            try:
-                line_bot_api.push_message(uid, TextSendMessage("⚠ 有玩家放棄，已回到等待池，繼續配桌中…", quick_reply=back_menu()))
-            except Exception as e:
-                print("abandon notify error:", e)
-
-        # 可能剛好補滿再成桌（同店同金額）
+        notify_table(table_id, "⚠ 有玩家放棄，已回到等待池，繼續配桌中…")
+        # 可能剛好補滿再成桌
         try_make_table(shop_id, amount)
 
     return (shop_id, amount)
+
 
 def timeout_checker():
     while True:
@@ -388,51 +387,36 @@ def timeout_checker():
                         db.commit()
                         notify_table(table_id, "⏳ 剩餘 10 秒未確認視同放棄")
 
-                
-# 到期處理：ready 到期 -> 視同放棄（本桌作廢，其餘回等待池繼續配桌）
-expired = db.execute("""
-    SELECT DISTINCT table_id FROM match_users
-    WHERE status='ready' AND expire IS NOT NULL AND expire < ?
-""", (now,)).fetchall()
+                # 到期處理：ready 到期 -> 視同放棄（只退未確認者）
+                expired = db.execute("""
+                    SELECT user_id, table_id FROM match_users
+                    WHERE status='ready' AND expire IS NOT NULL AND expire < ?
+                """, (now,)).fetchall()
 
-for r in expired:
-    table_id = r["table_id"]
-    if not table_id:
-        continue
+                # 用 table_id 分組處理，避免重複
+                handled_tables = set()
+                for r in expired:
+                    table_id = r["table_id"]
+                    if not table_id or table_id in handled_tables:
+                        continue
+                    handled_tables.add(table_id)
 
-    trow = db.execute("SELECT shop_id, amount FROM tables WHERE id=?", (table_id,)).fetchone()
-    if not trow:
-        # 若 tables 已無此桌，直接清掉殘留
-        db.execute("UPDATE match_users SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL WHERE table_id=?", (table_id,))
-        db.commit()
-        continue
+                    # 未確認者全部放棄
+                    unconfirmed = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND status='ready'", (table_id,)).fetchall()
+                    for u in unconfirmed:
+                        db.execute("DELETE FROM match_users WHERE user_id=?", (u["user_id"],))
 
-    shop_id = trow["shop_id"]
-    amount = trow["amount"]
+                    # 其餘玩家回等待池
+                    db.execute("UPDATE match_users SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL WHERE table_id=?", (table_id,))
+                    db.execute("DELETE FROM tables WHERE id=?", (table_id,))
+                    db.commit()
 
-    # 抓同桌所有人（先通知用）
-    all_users = db.execute("SELECT user_id FROM match_users WHERE table_id=?", (table_id,)).fetchall()
-    all_ids = [u["user_id"] for u in all_users]
-
-    # 未確認者刪除（視同放棄/取消配桌）
-    unconfirmed = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND status='ready'", (table_id,)).fetchall()
-    for u in unconfirmed:
-        db.execute("DELETE FROM match_users WHERE user_id=?", (u["user_id"],))
-
-    # 其餘玩家回等待池（保留配桌，繼續等補滿）
-    db.execute("UPDATE match_users SET status='waiting', expire=NULL, table_id=NULL, table_index=NULL WHERE table_id=?", (table_id,))
-    db.execute("DELETE FROM tables WHERE id=?", (table_id,))
-    db.commit()
-
-    # 通知原桌玩家
-    for uid in all_ids:
-        try:
-            line_bot_api.push_message(uid, TextSendMessage("⛔ 超過 30 秒未確認，視同放棄，已取消本次成桌並回到等待池", quick_reply=back_menu()))
-        except Exception as e:
-            print("timeout notify error:", e)
-
-    # 嘗試同店同金額再成桌
-    try_make_table(shop_id, amount)
+                    notify_table(table_id, "⛔ 超過 30 秒未確認，視同放棄，已取消本次成桌並回到等待池")
+                    # 嘗試再成桌
+                    # 取 shop/amount 用任一 match_users waiting
+                    w = db.execute("SELECT shop_id, amount FROM match_users WHERE status='waiting' LIMIT 1").fetchone()
+                    if w:
+                        try_make_table(w["shop_id"], w["amount"])
 
         except Exception as e:
             print("timeout_checker error:", e)
@@ -929,10 +913,9 @@ def handle_message(event):
 
         push_table(table_id, "✅ 有玩家加入")
 
-        # 全部玩家都確認才成功（以該桌的參與筆數為準）
-        need = db.execute("SELECT COUNT(*) AS n FROM match_users WHERE table_id=?", (table_id,)).fetchone()["n"]
+        # 4 人都確認才成功
         cnt = db.execute("SELECT COUNT(*) AS c FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchone()["c"]
-        if need and cnt >= need:
+        if cnt >= 4:
             finalize_success(table_id)
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
