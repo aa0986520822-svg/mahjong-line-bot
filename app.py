@@ -134,26 +134,33 @@ def get_next_table_index(db, shop_id):
     row = db.execute("SELECT MAX(table_index) AS m FROM tables WHERE shop_id=?", (shop_id,)).fetchone()
     return (row["m"] or 0) + 1
 
-def build_table_status_msg(db, table_id, title="🪑 桌子成立"):
+def build_table_status_msg(table_id, title="🀄 桌況更新"):
+    db = get_db()
     rows = db.execute("""
         SELECT user_id, status, people
         FROM match_users
         WHERE table_id=?
+        ORDER BY table_index
     """, (table_id,)).fetchall()
+
     if not rows:
         return None
 
-    total_people = sum(r["people"] for r in rows)
-    confirmed_people = sum(r["people"] for r in rows if r["status"] == "confirmed")
+    total = sum(r[2] for r in rows)
 
     msg = f"{title}\n\n"
-    msg += f"👥 人數：{total_people} / 4\n"
-    msg += f"✅ 已確認：{confirmed_people} / 4\n\n"
+    msg += f"👥 人數：{total} / 4\n"
+    confirmed = sum(1 for r in rows if r[1] == "confirmed")
+    msg += f"✅ 已確認：{confirmed} / 4\n\n"
 
-    for i, r in enumerate(rows, 1):
-        name = get_nickname(db, r["user_id"])
-        icon = "✅" if r["status"] == "confirmed" else "📩"
-        msg += f"{i}. {name}｜{r['people']}人 {icon}\n"
+    for i, (uid, status, p) in enumerate(rows, 1):
+        if status == "ready":
+            icon = "📩 待確認"
+        elif status == "confirmed":
+            icon = "✅ 已確認"
+        else:
+            icon = "⏳ 等待中"
+        msg += f"{i}. {p}人 {icon}\n"
 
     return msg
 
@@ -564,7 +571,7 @@ def handle_message(event):
                 QuickReplyButton(action=MessageAction(label="200/50", text="金額:200/50")),
                 QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單")),
             ]
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items)))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇金額", quick_reply=QuickReply(items=items+[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])))
             return
 
         if text.startswith("金額:"):
@@ -622,7 +629,7 @@ def handle_message(event):
                 # 成桌時已 reply 卡片，這裡不要再 reply 文字，避免覆蓋
                 return
 
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已加入配桌等待中"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已加入配桌等待中", quick_reply=QuickReply(items=[QuickReplyButton(action=MessageAction(label="🔙 回主畫面", text="選單"))])))
             return
 
         # ---- 加入 / 放棄 ----
