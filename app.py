@@ -200,7 +200,7 @@ def main_menu(user_id=None):
         QuickReplyButton(action=MessageAction(label="🤝 店家合作", text="店家合作")),
     ]
     if user_id in ADMIN_IDS:
-        items.append(QuickReplyButton(action=MessageAction(label="6️⃣ 店家管理", text="店家管理")))
+        items.append(QuickReplyButton(action=MessageAction(label="🛠 店家管理", text="店家管理")))
     return TextSendMessage("請選擇功能", quick_reply=QuickReply(items=items))
 
 
@@ -212,7 +212,12 @@ def get_group_link(db, shop_id):
 
 
 def get_next_table_index(db, shop_id):
-    row = db.execute("SELECT MAX(table_index) AS mx FROM tables WHERE shop_id=?", (shop_id,)).fetchone()
+    # ✅ 每月從 1 重新編號：只統計「本月建立」的桌號
+    month_start = datetime.now().replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp()
+    row = db.execute(
+        "SELECT MAX(table_index) AS mx FROM tables WHERE shop_id=? AND created>=?",
+        (shop_id, month_start)
+    ).fetchone()
     return (row["mx"] or 0) + 1
 
 
@@ -326,9 +331,6 @@ def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
         f"💰 金額：{amount}\n\n"
         f"⏱ {COUNTDOWN_READY} 秒內未確認視同放棄"
     )
-    status_msg = build_table_status_msg(db, table_id, "🪑 桌子成立（等待確認）")
-    if status_msg:
-        msg = msg + "\n\n" + status_msg
 
     qr = QuickReply(items=[
         QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
@@ -345,53 +347,38 @@ def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
         except Exception as e:
             print("confirm push error:", e)
 
+    push_table(table_id, "🪑 桌子成立（等待確認）")
     return table_id
 
 
-def finalize_success(table_id, skip_user_id=None):
+def finalize_success(table_id):
     db = get_db()
-    trow = db.execute(
-        "SELECT shop_id, amount, table_index FROM tables WHERE id=?",
-        (table_id,)
-    ).fetchone()
+    trow = db.execute("SELECT shop_id, amount, table_index FROM tables WHERE id=?", (table_id,)).fetchone()
     if not trow:
-        return None
+        return
 
-    shop_id = trow["shop_id"]
-    amount = trow["amount"]
+    group = get_group_link(db, trow["shop_id"])
     table_index = trow["table_index"]
-
-    shop = db.execute("SELECT name, group_link FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
-    shop_name = shop["name"] if shop and shop["name"] else "店家"
-    group = (shop["group_link"] if shop and shop["group_link"] else None) or SYSTEM_GROUP_LINK
+    amount = trow["amount"]
 
     rows = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchall()
-    msg = (
-        "🎉 配桌成功\n\n"
-        f"🏪 店家：{shop_name}\n"
-        f"🪑 桌號：{table_index}\n"
-        f"💰 金額：{amount}\n\n"
-        f"📣 您的號碼：{table_index}\n"
-        "🔔 入群後請回報號碼\n\n"
-        f"🔗 群組連結：{group}"
-    )
-
-    # 推播給其他已確認者（觸發者用 reply 送，避免同一事件重複 reply）
     for r in rows:
         uid = r["user_id"]
-        if skip_user_id and uid == skip_user_id:
-            continue
         try:
-            line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
+            line_bot_api.push_message(uid, TextSendMessage(
+                "🎉 配桌成功\n\n"
+                f"🪑 桌號：{table_index}\n"
+                f"💰 金額：{amount}\n\n"
+                f"🔗 群組連結：{group}\n"
+                "🔔 進群後請回報桌號",
+                quick_reply=back_menu()
+            ))
         except Exception as e:
             print("success push error:", e)
 
     db.execute("DELETE FROM match_users WHERE table_id=?", (table_id,))
     db.execute("DELETE FROM tables WHERE id=?", (table_id,))
     db.commit()
-
-    return msg
-
 
 
 def handle_abandon(user_id):
@@ -1017,23 +1004,23 @@ def handle_message(event):
         db.execute("UPDATE match_users SET status='confirmed' WHERE user_id=?", (user_id,))
         db.commit()
 
-        # ✅ 4 人都確認才成功（成功時只送一則「配桌成功＋群連結」）
-        cnt = db.execute("SELECT COUNT(*) AS c FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchone()["c"]
-        if cnt >= 4:
-            smsg = finalize_success(table_id, skip_user_id=user_id)
-            if smsg:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(smsg, quick_reply=back_menu()))
-                return
+        push_table(table_id, "✅ 有玩家加入")
+        # ✅ 以 people 加總判斷（支援 2+2、3+1、或單人選 4 人）
+        stats = db.execute("""
+            SELECT
+              COALESCE(SUM(people),0) AS total_people,
+              COALESCE(SUM(CASE WHEN status='confirmed' THEN people ELSE 0 END),0) AS confirmed_people
+            FROM match_users
+            WHERE table_id=?
+        """, (table_id,)).fetchone()
 
-        # ✅ 尚未全部確認：只回一則桌況更新（避免第三/第四則分開）
-        status_msg = build_table_status_msg(db, table_id, "✅ 已確認加入（等待其他人確認）")
-        if not status_msg:
-            status_msg = "✅ 已確認加入（等待其他人確認）"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(status_msg, quick_reply=confirm_menu()))
+        if stats and int(stats["total_people"]) == 4 and int(stats["confirmed_people"]) == 4:
+            finalize_success(table_id)
+
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
         return
 
     if text == "放棄":
-
         handle_abandon(user_id)
         user_state.pop(user_id, None)
         line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄（等同取消配桌）", quick_reply=back_menu()))
