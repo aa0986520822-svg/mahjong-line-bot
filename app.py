@@ -166,11 +166,11 @@ def display_name(db, user_id):
 
 def main_menu(user_id=None):
     items = [
-        QuickReplyButton(action=MessageAction(label="1️⃣ 店家配桌", text="店家配桌")),
-        QuickReplyButton(action=MessageAction(label="2️⃣ 記事本", text="記事本")),
-        QuickReplyButton(action=MessageAction(label="3️⃣ 設定暱稱", text="設定暱稱")),
-        QuickReplyButton(action=MessageAction(label="4️⃣ 店家地圖", text="店家地圖")),
-        QuickReplyButton(action=MessageAction(label="5️⃣ 店家合作", text="店家合作")),
+        QuickReplyButton(action=MessageAction(label="🀄 店家配桌", text="店家配桌")),
+        QuickReplyButton(action=MessageAction(label="📒 記事本", text="記事本")),
+        QuickReplyButton(action=MessageAction(label="🏷 設定暱稱", text="設定暱稱")),
+        QuickReplyButton(action=MessageAction(label="🗺 店家地圖", text="店家地圖")),
+        QuickReplyButton(action=MessageAction(label="🤝 店家合作", text="店家合作")),
     ]
     if user_id in ADMIN_IDS:
         items.append(QuickReplyButton(action=MessageAction(label="6️⃣ 店家管理", text="店家管理")))
@@ -813,8 +813,16 @@ def handle_message(event):
 
     # ===== 店家配桌 =====
     if text == "店家配桌":
-        row = db.execute("SELECT shop_id, amount, people, status FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        row = db.execute("SELECT shop_id, amount, people, status, table_id FROM match_users WHERE user_id=?", (user_id,)).fetchone()
         if row:
+            # ✅ 若正在「成桌確認」階段，優先顯示「加入/放棄」
+            if row["status"] == "ready":
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage("你目前在成桌確認中，請選擇：", quick_reply=confirm_menu())
+                )
+                return
+
             line_bot_api.reply_message(event.reply_token, TextSendMessage(
                 "你目前已有配桌紀錄\n(可查看進度/取消配桌)",
                 quick_reply=QuickReply(items=[
@@ -935,6 +943,15 @@ def handle_message(event):
         return
 
     if text == "取消配桌":
+        # ✅ 若在「成桌確認」中，取消配桌等同於放棄：自己退出，其他人回等待池繼續配桌
+        strow = db.execute("SELECT status FROM match_users WHERE user_id=?", (user_id,)).fetchone()
+        if strow and (strow["status"] in ("ready", "confirmed")):
+            handle_abandon(user_id)
+            user_state.pop(user_id, None)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄（等同取消配桌）", quick_reply=back_menu()))
+            return
+
+        # 其他狀態：維持原本取消
         row = db.execute("SELECT shop_id, amount FROM match_users WHERE user_id=?", (user_id,)).fetchone()
         if row:
             shop_id, amount = row["shop_id"], row["amount"]
