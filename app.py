@@ -346,7 +346,7 @@ def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
     return table_id
 
 
-def finalize_success(table_id):
+def finalize_success(table_id, reply_token=None, trigger_user_id=None):
     db = get_db()
     trow = db.execute("SELECT shop_id, amount, table_index FROM tables WHERE id=?", (table_id,)).fetchone()
     if not trow:
@@ -357,17 +357,23 @@ def finalize_success(table_id):
     amount = trow["amount"]
 
     rows = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchall()
+
+    msg = (
+        "🎉 配桌成功\n\n"
+        f"🪑 桌號：{table_index}\n"
+        f"💰 金額：{amount}\n\n"
+        f"🔗 群組連結：{group}\n"
+        "🔔 進群後請回報桌號"
+    )
+
     for r in rows:
         uid = r["user_id"]
         try:
-            line_bot_api.push_message(uid, TextSendMessage(
-                "🎉 配桌成功\n\n"
-                f"🪑 桌號：{table_index}\n"
-                f"💰 金額：{amount}\n\n"
-                f"🔗 群組連結：{group}\n"
-                "🔔 進群後請回報桌號",
-                quick_reply=back_menu()
-            ))
+            if reply_token and trigger_user_id and uid == trigger_user_id:
+                # ✅ 觸發者用 reply，確保一定看得到「群連結」
+                line_bot_api.reply_message(reply_token, TextSendMessage(msg, quick_reply=back_menu()))
+            else:
+                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
         except Exception as e:
             print("success push error:", e)
 
@@ -1004,7 +1010,7 @@ def handle_message(event):
         # 4 人都確認才成功
         cnt = db.execute("SELECT COUNT(*) AS c FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchone()["c"]
         if cnt >= 4:
-            finalize_success(table_id)
+            finalize_success(table_id, reply_token=event.reply_token, trigger_user_id=user_id)
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
         return
