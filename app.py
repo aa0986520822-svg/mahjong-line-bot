@@ -150,6 +150,33 @@ def back_menu():
         QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單"))
     ])
 
+def confirm_menu():
+    # 成桌確認階段：提供加入/放棄（避免被後續訊息蓋掉按鍵）
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label="✅ 加入", text="加入")),
+        QuickReplyButton(action=MessageAction(label="❌ 放棄", text="放棄")),
+        QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")),
+    ])
+
+
+def table_quick_reply(db, table_id):
+    # ✅ 以「倒數時間 expire」為準：只要未到期，就固定顯示加入/放棄，避免按鈕閃退/被覆蓋
+    if not table_id:
+        return back_menu()
+
+    erow = db.execute(
+        "SELECT MIN(expire) AS ex FROM match_users WHERE table_id=? AND expire IS NOT NULL",
+        (table_id,)
+    ).fetchone()
+
+    if erow and erow["ex"]:
+        remain = int(erow["ex"] - time.time())
+        if remain > 0:
+            return confirm_menu()
+
+    return back_menu()
+
+
 
 def get_nickname(db, user_id):
     row = db.execute("SELECT nickname FROM nicknames WHERE user_id=?", (user_id,)).fetchone()
@@ -237,7 +264,7 @@ def push_table(table_id, title="🀄 桌況更新"):
             return
         for uid in get_table_users(db, table_id):
             try:
-                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
+                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=table_quick_reply(db, table_id)))
             except Exception as e:
                 print("push_table error:", e)
 
@@ -247,7 +274,7 @@ def notify_table(table_id, text):
         db = get_db()
         for uid in get_table_users(db, table_id):
             try:
-                line_bot_api.push_message(uid, TextSendMessage(text, quick_reply=back_menu()))
+                line_bot_api.push_message(uid, TextSendMessage(text, quick_reply=table_quick_reply(db, table_id)))
             except Exception as e:
                 print("notify_table error:", e)
 
