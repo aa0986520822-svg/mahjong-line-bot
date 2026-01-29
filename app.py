@@ -346,40 +346,50 @@ def try_make_table(shop_id, amount, reply_token=None, trigger_user_id=None):
     return table_id
 
 
-def finalize_success(table_id, reply_token=None, trigger_user_id=None):
+def finalize_success(table_id, skip_user_id=None):
     db = get_db()
-    trow = db.execute("SELECT shop_id, amount, table_index FROM tables WHERE id=?", (table_id,)).fetchone()
+    trow = db.execute(
+        "SELECT shop_id, amount, table_index FROM tables WHERE id=?",
+        (table_id,)
+    ).fetchone()
     if not trow:
-        return
+        return None
 
-    group = get_group_link(db, trow["shop_id"])
-    table_index = trow["table_index"]
+    shop_id = trow["shop_id"]
     amount = trow["amount"]
+    table_index = trow["table_index"]
+
+    shop = db.execute("SELECT name, group_link FROM shops WHERE shop_id=?", (shop_id,)).fetchone()
+    shop_name = shop["name"] if shop and shop["name"] else "店家"
+    group = (shop["group_link"] if shop and shop["group_link"] else None) or SYSTEM_GROUP_LINK
 
     rows = db.execute("SELECT user_id FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchall()
 
     msg = (
         "🎉 配桌成功\n\n"
+        f"🏪 店家：{shop_name}\n"
         f"🪑 桌號：{table_index}\n"
         f"💰 金額：{amount}\n\n"
         f"🔗 群組連結：{group}\n"
         "🔔 進群後請回報桌號"
     )
 
+    # 推播給其他已確認者（觸發者用 reply 送，避免同一事件重複 reply）
     for r in rows:
         uid = r["user_id"]
+        if skip_user_id and uid == skip_user_id:
+            continue
         try:
-            if reply_token and trigger_user_id and uid == trigger_user_id:
-                # ✅ 觸發者用 reply，確保一定看得到「群連結」
-                line_bot_api.reply_message(reply_token, TextSendMessage(msg, quick_reply=back_menu()))
-            else:
-                line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
+            line_bot_api.push_message(uid, TextSendMessage(msg, quick_reply=back_menu()))
         except Exception as e:
             print("success push error:", e)
 
     db.execute("DELETE FROM match_users WHERE table_id=?", (table_id,))
     db.execute("DELETE FROM tables WHERE id=?", (table_id,))
     db.commit()
+
+    return msg
+
 
 
 def handle_abandon(user_id):
@@ -1010,7 +1020,7 @@ def handle_message(event):
         # 4 人都確認才成功
         cnt = db.execute("SELECT COUNT(*) AS c FROM match_users WHERE table_id=? AND status='confirmed'", (table_id,)).fetchone()["c"]
         if cnt >= 4:
-            finalize_success(table_id, reply_token=event.reply_token, trigger_user_id=user_id)
+            finalize_success(table_id)
 
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
         return
