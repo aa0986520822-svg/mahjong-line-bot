@@ -105,6 +105,43 @@ def init_db():
     )
     """)
 
+    # 使用者流程暫存（避免多進程/重啟造成記憶體 user_state 遺失）
+    db.execute("""
+    CREATE TABLE IF NOT EXISTS session_state(
+        user_id TEXT PRIMARY KEY,
+        shop_id TEXT,
+        amount TEXT,
+        updated REAL
+    )
+    """)
+
+    db.commit()
+
+
+
+def ss_set(db, user_id, shop_id=None, amount=None):
+    now = time.time()
+    row = db.execute("SELECT user_id, shop_id, amount FROM session_state WHERE user_id=?", (user_id,)).fetchone()
+    cur_shop = row["shop_id"] if row else None
+    cur_amt = row["amount"] if row else None
+    if shop_id is None:
+        shop_id = cur_shop
+    if amount is None:
+        amount = cur_amt
+    db.execute(
+        "INSERT OR REPLACE INTO session_state(user_id, shop_id, amount, updated) VALUES(?,?,?,?)",
+        (user_id, shop_id, amount, now)
+    )
+    db.commit()
+
+def ss_get(db, user_id):
+    row = db.execute("SELECT shop_id, amount FROM session_state WHERE user_id=?", (user_id,)).fetchone()
+    if not row:
+        return (None, None)
+    return (row["shop_id"], row["amount"])
+
+def ss_clear(db, user_id):
+    db.execute("DELETE FROM session_state WHERE user_id=?", (user_id,))
     db.commit()
 
 
@@ -428,6 +465,7 @@ def handle_postback(event):
     if data.startswith("shop="):
         sid = data.split("=", 1)[1].strip()
         user_state[user_id] = {"mode": "wait_amount", "shop_id": sid}
+        ss_set(db, user_id, shop_id=sid, amount=None)
         items = [
             QuickReplyButton(action=MessageAction(label="50/20", text="金額:50/20")),
             QuickReplyButton(action=MessageAction(label="100/20", text="金額:100/20")),
@@ -458,6 +496,7 @@ def handle_message(event):
     # ===== 回主選單 =====
     if text == "選單":
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, main_menu(user_id))
         return
 
@@ -570,6 +609,7 @@ def handle_message(event):
         db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (link, sid))
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已更新地圖連結", quick_reply=back_menu()))
         return
 
@@ -584,6 +624,7 @@ def handle_message(event):
         db.execute("INSERT OR REPLACE INTO nicknames(user_id, nickname) VALUES(?,?)", (user_id, nk))
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(f"✅ 暱稱已設定：{nk}", quick_reply=back_menu()))
         return
 
@@ -616,6 +657,7 @@ def handle_message(event):
         db.execute("INSERT INTO notes(user_id, content, amount, time) VALUES(?,?,?,?)", (user_id, "", amount, datetime.now().strftime("%Y-%m-%d")))
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, TextSendMessage(f"✅ 已新增：{amount:+}", quick_reply=back_menu()))
         return
 
@@ -694,6 +736,7 @@ def handle_message(event):
         )
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已送出申請，等待管理員審核", quick_reply=back_menu()))
         return
 
@@ -732,6 +775,7 @@ def handle_message(event):
         db.execute("UPDATE shops SET group_link=? WHERE shop_id=?", (link, row["shop_id"]))
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已設定群組連結", quick_reply=back_menu()))
         return
 
@@ -781,6 +825,7 @@ def handle_message(event):
             ))
             return
 
+        ss_clear(db, user_id)
         shops = db.execute("SELECT shop_id, name FROM shops WHERE open=1 AND approved=1 ORDER BY rowid DESC").fetchall()
         if not shops:
             line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
@@ -816,6 +861,7 @@ def handle_message(event):
     if text.startswith("店家:"):
         sid = text.split(":", 1)[1].strip()
         user_state[user_id] = {"mode": "wait_amount", "shop_id": sid}
+        ss_set(db, user_id, shop_id=sid, amount=None)
         items = [
             QuickReplyButton(action=MessageAction(label="50/20", text="金額:50/20")),
             QuickReplyButton(action=MessageAction(label="100/20", text="金額:100/20")),
@@ -830,10 +876,16 @@ def handle_message(event):
         amount = text.split(":", 1)[1].strip()
         st = user_state.get(user_id, {})
         if not st.get("shop_id"):
+            sid_db, _amt_db = ss_get(db, user_id)
+            if sid_db:
+                st["shop_id"] = sid_db
+                user_state[user_id] = st
+        if not st.get("shop_id"):
             line_bot_api.reply_message(event.reply_token, TextSendMessage("請先選擇店家", quick_reply=back_menu()))
             return
         st["amount"] = amount
         user_state[user_id] = st
+        ss_set(db, user_id, amount=amount)
         items = [
             QuickReplyButton(action=MessageAction(label="我1人", text="人數:1")),
             QuickReplyButton(action=MessageAction(label="我2人", text="人數:2")),
@@ -850,6 +902,10 @@ def handle_message(event):
         shop_id = st.get("shop_id")
         amount = st.get("amount")
         if not shop_id or not amount:
+            sid_db, amt_db = ss_get(db, user_id)
+            shop_id = shop_id or sid_db
+            amount = amount or amt_db
+        if not shop_id or not amount:
             line_bot_api.reply_message(event.reply_token, TextSendMessage("資料不足，請重新開始配桌", quick_reply=back_menu()))
             user_state.pop(user_id, None)
             return
@@ -860,6 +916,7 @@ def handle_message(event):
         """, (user_id, people, shop_id, amount))
         db.commit()
         user_state.pop(user_id, None)
+        ss_clear(db, user_id)
 
         # 嘗試成桌；把「當前使用者」用 reply 送出，避免多訊息順序問題
         table_id = try_make_table(shop_id, amount, reply_token=event.reply_token, trigger_user_id=user_id)
