@@ -1,19 +1,39 @@
 # app.py
-# Mahjong Table System (Python/Flask + LINE OA) - Render deploy-ready
+# Mahjong Table System (Python/Flask + LINE OA + LIFF) - Render deploy-ready
+# ===================================================
+# ✅ 依照「最新統整後」規格完整實作（含你剛補的：同帳號避免重複開/配桌）
 #
-# ✅ Features (per your latest requirements)
-# 1) 主選單 Quick Reply：開桌、配桌、桌況查詢(缺1/缺2/缺3)、我的、聯絡店家
-#    （店家身分再多：店家後台、客戶資訊）
-# 2) 聯絡店家：只有 店家LINE / 地圖（URI 連結）
-# 3) 取消所有「返回」按鍵；主選單不需要回主選單按鍵；其他頁面可有「主選單」
-# 4) 強制綁定手機：未綁定 → 只能先綁手機（成功回「綁定完成」）
-#    我的頁：顯示暱稱/手機/配桌狀態/信用分數，且可修改暱稱/手機、查信用分
-# 5) 店家後台：群設定/地圖設定/店家LINE設定、營業/休息、6位碼新增管理員
-#    - 6位碼：自動產出、一次性、10分鐘有效、管理員上限5位、名單/移除
-# 6) 開桌/配桌分開
-#    - 配桌：快手/慢手/不限；人數：我1/2/3；金額：50/20 100/20 100/50 200/50；將數：2將/3將
-#    - 備註：可略過（沒輸入可跳過）
-# 7) 桌況查詢：缺1/缺2/缺3 → Flex 卡片，按「用LIFF加入」即可加入（預設加入1人）
+# 玩家端（LINE Quick Reply 按鍵模式）：
+# - 強制綁定手機（未綁定只能先綁手機）
+# - 主選單：開桌 / 配桌 / 桌況查詢(直接跳LIFF Lobby) / 我的 / 聯絡店家
+# - 開桌：手速/人數/金額/將數/備註(可略過)
+# - 配桌：手速/人數/金額/將數（不需要備註）
+# - 我的：顯示暱稱/手機/配桌狀態/信用分（不需要「查信用分」按鈕），可修改暱稱/手機
+# - 聯絡店家：店家LINE、地圖（URI連結）
+# - 店家休息時：自動關閉「開桌/配桌/桌況查詢（LIFF Lobby）」；會提示休息中並回主選單
+# - 同帳號若已有「進行中桌」（waiting/confirming），再次點開桌/配桌 → 顯示：
+#     取消（取消開桌/取消配桌）、查看桌況（LIFF Lobby）、回主畫面
+#
+# LIFF（桌況查詢直接跳 LIFF Lobby）：
+# - Lobby 顯示所有等待中的桌（含金額/將數/手速/備註/即時缺人）
+# - 點桌 → 選人數(我1/2/3) → 加入
+# - 若人數超過缺口：顯示「人數超過 無法入桌」
+# - 人數湊滿 4 → 進入「最後確認」階段（confirming）
+# - 所有「加入者帳號」都要按確認：
+#     全部確認 → 成桌 filled → 推播成桌資訊（每位參與者各收到一次）
+#     任一放棄 → 該人退出（扣掉人數），其他人留在等待池（回 waiting）
+#
+# 店家端：
+# - 店家後台：群連結/地圖/店家LINE 設定、營業/休息、6位碼新增管理員（上限5位、一次性、10分鐘有效）
+# - 客戶資訊：兩個選項
+#   1) 查詢（暱稱關鍵字 或 手機末三碼）→ 顯示玩家資料（店家可看手機全碼）→ 一鍵扣分
+#      扣分固定項目：放鳥-20、取消-5、遲到-10、玩家檢舉-15（店家手動）
+#      信用分低於60自動凍結（玩家只能看到自己的分數）
+#   2) 導出全部已綁手機用戶 → Excel(.xlsx) 下載連結
+#
+# 桌號規則：
+# - 不論開桌或配桌：同一序列
+# - 每月重置，從 1 開始（玩家看到的是 display table_no：YYYY-MM-序號）
 #
 # Required ENV on Render:
 #   CHANNEL_ACCESS_TOKEN
@@ -22,15 +42,21 @@
 #   DATABASE_PATH (default: /tmp/mahjong.db)
 #   LIFF_ID (default: 2009050373-HHA8grO4)
 #   BASE_URL (default: https://mahjong-line-bot.onrender.com)
+#
+# Notes:
+# - SQLite 在 Render free tier 使用 /tmp 可能會重置；要永久資料請用 Render disk 或外部 DB。
 
 import os
 import re
 import json
 import sqlite3
 import random
+import secrets
 from datetime import datetime, timedelta
 
-from flask import Flask, request, abort, jsonify, render_template_string
+from flask import Flask, request, abort, jsonify, render_template_string, send_file
+
+from openpyxl import Workbook
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -39,7 +65,6 @@ from linebot.models import (
     TextSendMessage,
     QuickReply, QuickReplyButton,
     MessageAction, URIAction,
-    FlexSendMessage
 )
 
 # ----------------------------
@@ -53,6 +78,7 @@ LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
 BASE_URL = os.getenv("BASE_URL", "https://mahjong-line-bot.onrender.com").strip().rstrip("/")
 
 TABLE_SIZE = 4
+CREDIT_FREEZE_THRESHOLD = 60
 
 MATCH_SPEEDS = ["快手", "慢手", "不限"]
 MATCH_PARTY_SIZES = ["我1人", "我2人", "我3人"]
@@ -64,8 +90,16 @@ PHONE_RE = re.compile(r"^09\d{8}$")
 ADMIN_MAX_COUNT = 5
 ADMIN_CODE_EXPIRE_MIN = 10
 
-# Credit (kept for "我的" 查詢)
-CREDIT_FREEZE_THRESHOLD = 60
+EXPORT_EXPIRE_MIN = 15  # 匯出檔下載連結有效分鐘數
+
+DEDUCTION_OPTIONS = [
+    ("放鳥", -20),
+    ("取消", -5),
+    ("遲到", -10),
+    ("玩家檢舉", -15),
+]
+
+EXPORT_DIR = "/tmp/exports"
 
 app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
@@ -83,8 +117,12 @@ def dt_to_iso(dt: datetime) -> str:
 def iso_to_dt(s: str) -> datetime:
     return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
 
+def month_key_utc(dt: datetime = None) -> str:
+    dt = dt or datetime.utcnow()
+    return dt.strftime("%Y-%m")  # e.g., 2026-02
+
 # ----------------------------
-# DB helpers
+# DB
 # ----------------------------
 def db_conn():
     conn = sqlite3.connect(DATABASE_PATH)
@@ -92,6 +130,8 @@ def db_conn():
     return conn
 
 def init_db():
+    os.makedirs(EXPORT_DIR, exist_ok=True)
+
     conn = db_conn()
     cur = conn.cursor()
 
@@ -148,28 +188,63 @@ def init_db():
     )
     """)
 
+    # Monthly table number sequence
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS table_sequences (
+        month_key TEXT PRIMARY KEY,
+        next_no INTEGER
+    )
+    """)
+
+    # Requests: store display table_no + month_key
     cur.execute("""
     CREATE TABLE IF NOT EXISTS match_requests (
         req_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        month_key TEXT,
+        table_no INTEGER,
         creator_user_id TEXT,
-        req_type TEXT,               -- open / match
+        req_type TEXT,                  -- open / match
         speed TEXT,
-        party_size INTEGER,
         amount TEXT,
         rounds TEXT,
         remark TEXT,
-        status TEXT DEFAULT 'waiting', -- waiting/filled/cancelled
+        status TEXT DEFAULT 'waiting',  -- waiting / confirming / filled / cancelled
         created_at TEXT
     )
     """)
 
+    # Participants store party_size and confirm state
     cur.execute("""
     CREATE TABLE IF NOT EXISTS request_participants (
         req_id INTEGER,
         user_id TEXT,
         party_size INTEGER,
+        confirmed INTEGER DEFAULT 0,
         joined_at TEXT,
         PRIMARY KEY (req_id, user_id)
+    )
+    """)
+
+    # Credit logs
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS credit_logs (
+        log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        target_user_id TEXT,
+        delta INTEGER,
+        reason TEXT,
+        by_user_id TEXT,
+        created_at TEXT
+    )
+    """)
+
+    # Export files
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS export_files (
+        export_id TEXT PRIMARY KEY,
+        file_path TEXT,
+        created_by TEXT,
+        created_at TEXT,
+        expire_at TEXT
     )
     """)
 
@@ -191,6 +266,12 @@ def get_shop():
     row = cur.fetchone()
     conn.close()
     return row
+
+def shop_is_open() -> bool:
+    shop = get_shop()
+    if not shop:
+        return True
+    return int(shop["is_open"] or 0) == 1
 
 def update_shop_field(field: str, value):
     if field not in ("group_link", "map_link", "shop_line_link", "is_open", "name"):
@@ -217,6 +298,7 @@ def get_or_create_user(user_id: str, nickname: str = ""):
         )
         conn.commit()
     else:
+        # keep nickname synced (best effort)
         if nickname is not None and nickname != row["nickname"]:
             cur.execute("UPDATE users SET nickname=? WHERE user_id=?", (nickname, user_id))
             conn.commit()
@@ -282,7 +364,7 @@ def list_shop_admin_user_ids():
         return []
     conn = db_conn()
     cur = conn.cursor()
-    cur.execute("SELECT user_id FROM shop_admins WHERE shop_id=? ORDER BY used_by", (shop["shop_id"],))
+    cur.execute("SELECT user_id FROM shop_admins WHERE shop_id=? ORDER BY user_id", (shop["shop_id"],))
     rows = cur.fetchall()
     conn.close()
     return [r["user_id"] for r in rows]
@@ -293,7 +375,6 @@ def add_shop_admin(user_id: str) -> (bool, str):
         return False, "店家資料不存在。"
     if count_shop_admins() >= ADMIN_MAX_COUNT:
         return False, f"⚠️ 管理員已達上限（{ADMIN_MAX_COUNT}位），請先移除後再新增。"
-
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("INSERT OR IGNORE INTO shop_admins (shop_id, user_id) VALUES (?, ?)", (shop["shop_id"], user_id))
@@ -350,120 +431,6 @@ def clear_state(user_id: str):
     cur.execute("DELETE FROM user_state WHERE user_id=?", (user_id,))
     conn.commit()
     conn.close()
-
-# ----------------------------
-# Match request helpers
-# ----------------------------
-def create_request(creator_user_id: str, req_type: str, speed: str, party_size: int, amount: str, rounds: str, remark: str):
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    INSERT INTO match_requests (creator_user_id, req_type, speed, party_size, amount, rounds, remark, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (creator_user_id, req_type, speed, int(party_size), amount, rounds, remark or "", iso_now()))
-    req_id = cur.lastrowid
-    cur.execute("""
-    INSERT OR IGNORE INTO request_participants (req_id, user_id, party_size, joined_at)
-    VALUES (?, ?, ?, ?)
-    """, (req_id, creator_user_id, int(party_size), iso_now()))
-    conn.commit()
-    conn.close()
-    mark_filled_if_needed(req_id)
-    return req_id
-
-def get_request(req_id: int):
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM match_requests WHERE req_id=?", (int(req_id),))
-    row = cur.fetchone()
-    conn.close()
-    return row
-
-def participant_sum(req_id: int) -> int:
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COALESCE(SUM(party_size),0) AS s FROM request_participants WHERE req_id=?", (int(req_id),))
-    row = cur.fetchone()
-    conn.close()
-    return int(row["s"] if row else 0)
-
-def mark_filled_if_needed(req_id: int):
-    current = participant_sum(req_id)
-    if current >= TABLE_SIZE:
-        conn = db_conn()
-        cur = conn.cursor()
-        cur.execute("UPDATE match_requests SET status='filled' WHERE req_id=?", (int(req_id),))
-        conn.commit()
-        conn.close()
-
-def join_request(req_id: int, user_id: str, party_size: int = 1) -> (bool, str):
-    req = get_request(req_id)
-    if not req:
-        return False, "找不到此桌。"
-    if req["status"] != "waiting":
-        return False, "此桌已結束或無法加入。"
-
-    current = participant_sum(req_id)
-    missing = TABLE_SIZE - current
-    if missing <= 0:
-        mark_filled_if_needed(req_id)
-        return False, "此桌已滿。"
-    if int(party_size) > missing:
-        return False, f"目前只缺 {missing} 人，加入失敗。"
-
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    INSERT OR REPLACE INTO request_participants (req_id, user_id, party_size, joined_at)
-    VALUES (?, ?, ?, ?)
-    """, (int(req_id), user_id, int(party_size), iso_now()))
-    conn.commit()
-    conn.close()
-
-    mark_filled_if_needed(req_id)
-    return True, "加入成功。"
-
-def list_waiting_requests_by_need(need: int, limit: int = 8):
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT * FROM match_requests
-    WHERE status='waiting'
-    ORDER BY req_id DESC
-    LIMIT ?
-    """, (limit * 8,))
-    rows = cur.fetchall()
-    conn.close()
-
-    result = []
-    for r in rows:
-        current = participant_sum(r["req_id"])
-        missing = TABLE_SIZE - current
-        if missing == int(need):
-            result.append((r, current, missing))
-        if len(result) >= limit:
-            break
-    return result
-
-def get_my_latest_status_text(user_id: str) -> str:
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT req_id, status FROM match_requests
-    WHERE creator_user_id=?
-    ORDER BY req_id DESC LIMIT 1
-    """, (user_id,))
-    row = cur.fetchone()
-    conn.close()
-    if not row:
-        return "無進行中"
-    if row["status"] == "waiting":
-        return f"等待中（桌號 #{row['req_id']}）"
-    if row["status"] == "filled":
-        return f"已成桌（桌號 #{row['req_id']}）"
-    if row["status"] == "cancelled":
-        return f"已取消（桌號 #{row['req_id']}）"
-    return "無進行中"
 
 # ----------------------------
 # Admin code (6 digits)
@@ -537,7 +504,6 @@ def redeem_invite_code(code: str, user_id: str) -> (bool, str):
         conn.close()
         return False, "此 6 位碼已使用。"
 
-    # Expire check
     try:
         exp = iso_to_dt(row["expire_at"])
     except Exception:
@@ -548,12 +514,10 @@ def redeem_invite_code(code: str, user_id: str) -> (bool, str):
         conn.close()
         return False, "此 6 位碼已過期。"
 
-    # Admin limit check
     if count_shop_admins() >= ADMIN_MAX_COUNT:
         conn.close()
         return False, f"⚠️ 管理員已達上限（{ADMIN_MAX_COUNT}位），請先移除後再新增。"
 
-    # Mark used
     cur.execute("""
     UPDATE admin_invite_codes
     SET used_by=?, used_at=?
@@ -568,16 +532,455 @@ def redeem_invite_code(code: str, user_id: str) -> (bool, str):
     return True, "✅ 已新增為管理員。"
 
 # ----------------------------
+# Gate checks
+# ----------------------------
+def must_bind_phone(user_id: str) -> bool:
+    u = get_user(user_id)
+    return (not u) or (not (u["phone"] or "").strip())
+
+def is_frozen(user_id: str) -> bool:
+    u = get_user(user_id)
+    if not u:
+        return False
+    return int(u["frozen"] or 0) == 1
+
+def ensure_shop_open_or_message(reply_token: str, user_id: str) -> bool:
+    if shop_is_open():
+        return True
+    reply_main(reply_token, user_id, "⚠️ 店家目前休息中，暫停配桌服務\n請稍後再試")
+    return False
+
+def ensure_not_frozen_or_message(reply_token: str, user_id: str) -> bool:
+    if not is_frozen(user_id):
+        return True
+    reply_main(reply_token, user_id, "⚠️ 你的帳號目前為凍結狀態，暫時無法配桌/開桌\n請聯絡店家處理")
+    return False
+
+# ----------------------------
+# Table number sequence (monthly reset)
+# ----------------------------
+def allocate_table_no() -> (str, int):
+    mk = month_key_utc()
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT next_no FROM table_sequences WHERE month_key=?", (mk,))
+    row = cur.fetchone()
+    if row is None:
+        next_no = 1
+        cur.execute("INSERT INTO table_sequences (month_key, next_no) VALUES (?, ?)", (mk, 2))
+        conn.commit()
+        conn.close()
+        return mk, next_no
+    next_no = int(row["next_no"] or 1)
+    cur.execute("UPDATE table_sequences SET next_no=? WHERE month_key=?", (next_no + 1, mk))
+    conn.commit()
+    conn.close()
+    return mk, next_no
+
+# ----------------------------
+# Request helpers
+# ----------------------------
+def request_participant_sum(req_id: int) -> int:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(SUM(party_size),0) AS s FROM request_participants WHERE req_id=?", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["s"] if row else 0)
+
+def request_participant_count(req_id: int) -> int:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS c FROM request_participants WHERE req_id=?", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"] if row else 0)
+
+def request_confirmed_count(req_id: int) -> int:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS c FROM request_participants WHERE req_id=? AND confirmed=1", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"] if row else 0)
+
+def list_participants(req_id: int):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM request_participants WHERE req_id=? ORDER BY joined_at", (int(req_id),))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def get_request(req_id: int):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM match_requests WHERE req_id=?", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def set_request_status(req_id: int, status: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE match_requests SET status=? WHERE req_id=?", (status, int(req_id)))
+    conn.commit()
+    conn.close()
+
+def reset_confirmations(req_id: int):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE request_participants SET confirmed=0 WHERE req_id=?", (int(req_id),))
+    conn.commit()
+    conn.close()
+
+def display_table_no(req_row) -> str:
+    return f"{req_row['month_key']}-{int(req_row['table_no'])}"
+
+def create_request(creator_user_id: str, req_type: str, speed: str, party_size: int, amount: str, rounds: str, remark: str):
+    mk, table_no = allocate_table_no()
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO match_requests (month_key, table_no, creator_user_id, req_type, speed, amount, rounds, remark, status, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting', ?)
+    """, (mk, int(table_no), creator_user_id, req_type, speed, amount, rounds, remark or "", iso_now()))
+    req_id = cur.lastrowid
+    cur.execute("""
+    INSERT OR REPLACE INTO request_participants (req_id, user_id, party_size, confirmed, joined_at)
+    VALUES (?, ?, ?, 0, ?)
+    """, (req_id, creator_user_id, int(party_size), iso_now()))
+    conn.commit()
+    conn.close()
+    return req_id
+
+def list_lobby_tables(limit: int = 100):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT * FROM match_requests
+    WHERE status IN ('waiting','confirming')
+    ORDER BY req_id DESC
+    LIMIT ?
+    """, (int(limit),))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def find_active_request_for_user(user_id: str):
+    # find newest request where user is participant and request is waiting/confirming
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT mr.*
+    FROM request_participants rp
+    JOIN match_requests mr ON mr.req_id = rp.req_id
+    WHERE rp.user_id = ? AND mr.status IN ('waiting','confirming')
+    ORDER BY mr.req_id DESC
+    LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def cancel_for_user(user_id: str) -> (bool, str):
+    req = find_active_request_for_user(user_id)
+    if not req:
+        return False, "你目前沒有進行中的桌。"
+    return give_up(int(req["req_id"]), user_id)
+
+def join_request(req_id: int, user_id: str, party_size: int) -> (bool, str):
+    req = get_request(req_id)
+    if not req:
+        return False, "找不到此桌。"
+    if req["status"] in ("filled", "cancelled"):
+        return False, "此桌已結束或無法加入。"
+    if req["status"] == "confirming":
+        return False, "此桌正在確認中，暫無法加入。"
+
+    current = request_participant_sum(req_id)
+    missing = TABLE_SIZE - current
+    if missing <= 0:
+        return False, "此桌已滿。"
+    if int(party_size) > missing:
+        return False, "人數超過 無法入桌"
+
+    conn = db_conn()
+    cur = conn.cursor()
+    # Replace or insert; reset confirmed=0
+    cur.execute("""
+    INSERT OR REPLACE INTO request_participants (req_id, user_id, party_size, confirmed, joined_at)
+    VALUES (?, ?, ?, 0, ?)
+    """, (int(req_id), user_id, int(party_size), iso_now()))
+    conn.commit()
+    conn.close()
+
+    current2 = request_participant_sum(req_id)
+    if current2 >= TABLE_SIZE:
+        set_request_status(req_id, "confirming")
+        reset_confirmations(req_id)
+        push_confirm_to_participants(req_id)
+
+    return True, "加入成功。"
+
+def give_up(req_id: int, user_id: str) -> (bool, str):
+    req = get_request(req_id)
+    if not req:
+        return False, "找不到此桌。"
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM request_participants WHERE req_id=? AND user_id=?", (int(req_id), user_id))
+    conn.commit()
+    conn.close()
+
+    # if no participants remain → cancel table to avoid junk
+    remaining = request_participant_count(req_id)
+    if remaining <= 0:
+        set_request_status(req_id, "cancelled")
+        return True, "已取消。"
+
+    # revert to waiting; keep others in pool
+    set_request_status(req_id, "waiting")
+    reset_confirmations(req_id)
+    return True, "已放棄，其他人繼續等待中。"
+
+def confirm_join(req_id: int, user_id: str) -> (bool, str):
+    req = get_request(req_id)
+    if not req:
+        return False, "找不到此桌。"
+    if req["status"] != "confirming":
+        return False, "此桌不在確認階段。"
+
+    # mark confirmed
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    UPDATE request_participants
+    SET confirmed=1
+    WHERE req_id=? AND user_id=?
+    """, (int(req_id), user_id))
+    conn.commit()
+    conn.close()
+
+    joined_cnt = request_participant_count(req_id)
+    confirmed_cnt = request_confirmed_count(req_id)
+    if joined_cnt > 0 and confirmed_cnt == joined_cnt:
+        set_request_status(req_id, "filled")
+        push_filled_info(req_id)
+        return True, "✅ 已確認，成桌成功！"
+    return True, f"✅ 已確認（{confirmed_cnt}/{joined_cnt}）等待其他人確認…"
+
+def my_latest_status_text(user_id: str) -> str:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT month_key, table_no, status
+    FROM match_requests
+    WHERE creator_user_id=?
+    ORDER BY req_id DESC LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return "無進行中"
+    status = row["status"]
+    tno = f"{row['month_key']}-{int(row['table_no'])}"
+    if status == "waiting":
+        return f"等待中（桌號 {tno}）"
+    if status == "confirming":
+        return f"確認中（桌號 {tno}）"
+    if status == "filled":
+        return f"已成桌（桌號 {tno}）"
+    if status == "cancelled":
+        return f"已取消（桌號 {tno}）"
+    return "無進行中"
+
+# ----------------------------
+# Push messages
+# ----------------------------
+def push_confirm_to_participants(req_id: int):
+    req = get_request(req_id)
+    if not req:
+        return
+    participants = list_participants(req_id)
+    if not participants:
+        return
+
+    confirm_uri = f"https://liff.line.me/{LIFF_ID}?view=confirm&req_id={req_id}"
+    msg = (
+        f"✅ 人數已滿（桌號 {display_table_no(req)}）\n"
+        f"請進入確認頁面選擇：加入確認 / 放棄\n"
+        f"（所有加入者都確認後才會成桌）\n\n"
+        f"👉 確認連結：{confirm_uri}"
+    )
+    for p in participants:
+        try:
+            line_bot_api.push_message(p["user_id"], TextSendMessage(text=msg))
+        except Exception:
+            pass
+
+def push_filled_info(req_id: int):
+    req = get_request(req_id)
+    if not req:
+        return
+    shop = get_shop()
+    participants = list_participants(req_id)
+    if not participants:
+        return
+
+    shop_name = (shop["name"] or "店家") if shop else "店家"
+    group_link = (shop["group_link"] or "").strip() if shop else ""
+    amount = req["amount"] or "-"
+    msg = (
+        f"🎉 成桌成功\n"
+        f"🏪 店家：{shop_name}\n"
+        f"🪑 桌號：{display_table_no(req)}\n"
+        f"💰 金額：{amount}\n\n"
+        f"🔗 群組連結：{group_link if group_link else '（尚未設定）'}\n\n"
+        f"⏱️ 請於 20 分鐘內到店家\n"
+        f"💬 進群後 3 分鐘內回報桌號"
+    )
+    for p in participants:
+        try:
+            line_bot_api.push_message(p["user_id"], TextSendMessage(text=msg))
+        except Exception:
+            pass
+
+# ----------------------------
+# Credit (shop manual deduction)
+# ----------------------------
+def apply_deduction(target_user_id: str, delta: int, reason: str, by_user_id: str) -> (bool, str):
+    u = get_user(target_user_id)
+    if not u:
+        return False, "找不到用戶。"
+    new_credit = int(u["credit"] or 0) + int(delta)
+    if new_credit < 0:
+        new_credit = 0
+
+    frozen = int(u["frozen"] or 0)
+    if new_credit < CREDIT_FREEZE_THRESHOLD:
+        frozen = 1
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET credit=?, frozen=? WHERE user_id=?", (int(new_credit), int(frozen), target_user_id))
+    cur.execute("""
+    INSERT INTO credit_logs (target_user_id, delta, reason, by_user_id, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    """, (target_user_id, int(delta), reason, by_user_id, iso_now()))
+    conn.commit()
+    conn.close()
+    return True, f"✅ 已扣分：{reason}（{delta}）\n目前信用分：{new_credit}\n狀態：{'凍結' if frozen==1 else '正常'}"
+
+# ----------------------------
+# Excel export
+# ----------------------------
+def cleanup_exports():
+    now = datetime.utcnow()
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT export_id, file_path, expire_at FROM export_files")
+    rows = cur.fetchall()
+    for r in rows:
+        try:
+            exp = iso_to_dt(r["expire_at"])
+        except Exception:
+            exp = now - timedelta(days=1)
+        if exp < now:
+            # delete file
+            fp = r["file_path"]
+            try:
+                if fp and os.path.exists(fp):
+                    os.remove(fp)
+            except Exception:
+                pass
+            cur.execute("DELETE FROM export_files WHERE export_id=?", (r["export_id"],))
+    conn.commit()
+    conn.close()
+
+def create_export_file(created_by: str) -> (bool, str):
+    cleanup_exports()
+    export_id = secrets.token_urlsafe(16)
+    file_path = os.path.join(EXPORT_DIR, f"customers_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{export_id}.xlsx")
+
+    # query all users with bound phone
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT nickname, phone, credit, frozen, created_at
+    FROM users
+    WHERE phone IS NOT NULL AND TRIM(phone) != ''
+    ORDER BY created_at DESC
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "customers"
+    ws.append(["暱稱", "手機", "信用分", "狀態", "建立時間"])
+    for r in rows:
+        ws.append([
+            r["nickname"] or "",
+            r["phone"] or "",
+            int(r["credit"] or 0),
+            "凍結" if int(r["frozen"] or 0) == 1 else "正常",
+            r["created_at"] or ""
+        ])
+    try:
+        wb.save(file_path)
+    except Exception as e:
+        return False, f"匯出失敗：{e}"
+
+    now = datetime.utcnow()
+    exp = now + timedelta(minutes=EXPORT_EXPIRE_MIN)
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO export_files (export_id, file_path, created_by, created_at, expire_at)
+    VALUES (?, ?, ?, ?, ?)
+    """, (export_id, file_path, created_by, dt_to_iso(now), dt_to_iso(exp)))
+    conn.commit()
+    conn.close()
+
+    link = f"{BASE_URL}/export/{export_id}"
+    return True, f"✅ 已產生 Excel（有效 {EXPORT_EXPIRE_MIN} 分鐘）\n下載連結：{link}"
+
+def get_export_path(export_id: str):
+    cleanup_exports()
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT file_path, expire_at FROM export_files WHERE export_id=?", (export_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        exp = iso_to_dt(row["expire_at"])
+    except Exception:
+        return None
+    if exp < datetime.utcnow():
+        return None
+    fp = row["file_path"]
+    if not fp or not os.path.exists(fp):
+        return None
+    return fp
+
+# ----------------------------
 # Quick Reply builders
 # ----------------------------
 def qr(actions):
     return QuickReply(items=[QuickReplyButton(action=a) for a in actions])
 
+def liff_lobby_url():
+    return f"https://liff.line.me/{LIFF_ID}?view=lobby"
+
 def main_menu_qr(user_id: str):
     actions = [
         MessageAction(label="開桌", text="開桌"),
         MessageAction(label="配桌", text="配桌"),
-        MessageAction(label="桌況查詢", text="桌況查詢"),
+        URIAction(label="桌況查詢", uri=liff_lobby_url()),
         MessageAction(label="我的", text="我的"),
         MessageAction(label="聯絡店家", text="聯絡店家"),
     ]
@@ -600,6 +1003,7 @@ def contact_shop_qr():
         actions.append(URIAction(label="地圖", uri=map_link))
     if not actions:
         actions = [MessageAction(label="主選單", text="主選單")]
+    actions.append(MessageAction(label="主選單", text="主選單"))
     return qr(actions)
 
 def speed_qr():
@@ -640,19 +1044,10 @@ def remark_qr():
         MessageAction(label="主選單", text="主選單"),
     ])
 
-def table_query_qr():
-    return qr([
-        MessageAction(label="缺1", text="缺1"),
-        MessageAction(label="缺2", text="缺2"),
-        MessageAction(label="缺3", text="缺3"),
-        MessageAction(label="主選單", text="主選單"),
-    ])
-
 def my_qr():
     return qr([
         MessageAction(label="修改暱稱", text="修改暱稱"),
         MessageAction(label="修改手機", text="修改手機"),
-        MessageAction(label="查信用分", text="查信用分"),
         MessageAction(label="主選單", text="主選單"),
     ])
 
@@ -665,145 +1060,100 @@ def shop_backend_qr():
         MessageAction(label="新增管理員(6位碼)", text="新增管理員"),
         MessageAction(label="管理員名單", text="管理員名單"),
         MessageAction(label="移除管理員", text="移除管理員"),
+        MessageAction(label="輸入6位碼", text="輸入6位碼"),
         MessageAction(label="主選單", text="主選單"),
     ])
 
-# ----------------------------
-# Flex: table list with LIFF join
-# ----------------------------
-def flex_table_list(need: int):
-    items = list_waiting_requests_by_need(need, limit=8)
-    if not items:
-        return None
+def customer_info_qr():
+    return qr([
+        MessageAction(label="查詢", text="客戶查詢"),
+        MessageAction(label="導出Excel", text="導出用戶"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
 
-    bubbles = []
-    for r, current, missing in items:
-        req_id = int(r["req_id"])
-        join_uri = f"https://liff.line.me/{LIFF_ID}?action=join&req_id={req_id}"
+def deduction_qr():
+    actions = []
+    for name, delta in DEDUCTION_OPTIONS:
+        actions.append(MessageAction(label=f"{name}{delta}", text=f"扣分 {name}"))
+    actions.append(MessageAction(label="返回客戶資訊", text="客戶資訊"))
+    actions.append(MessageAction(label="主選單", text="主選單"))
+    return qr(actions)
 
-        summary = f"缺{missing}｜{r['speed']}｜{r['amount']}｜{r['rounds']}"
-        remark = (r["remark"] or "").strip()
-        remark_text = f"備註：{remark}" if remark else "備註：無"
-
-        bubbles.append({
-            "type": "bubble",
-            "size": "mega",
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {"type": "text", "text": f"桌號 #{req_id}", "weight": "bold", "size": "lg"},
-                    {"type": "text", "text": summary, "size": "md", "wrap": True},
-                    {"type": "text", "text": f"目前：{current}/{TABLE_SIZE}", "size": "sm", "color": "#666666"},
-                    {"type": "text", "text": remark_text, "size": "sm", "wrap": True, "color": "#666666"},
-                ]
-            },
-            "footer": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "contents": [
-                    {
-                        "type": "button",
-                        "style": "primary",
-                        "action": {"type": "uri", "label": "用LIFF加入", "uri": join_uri}
-                    }
-                ]
-            }
-        })
-
-    payload = {"type": "carousel", "contents": bubbles}
-    return FlexSendMessage(alt_text=f"桌況查詢 缺{need}", contents=payload)
+def active_block_qr(req_type: str):
+    # req_type: open/match
+    cancel_label = "取消開桌" if req_type == "open" else "取消配桌"
+    cancel_text = cancel_label
+    return qr([
+        MessageAction(label=cancel_label, text=cancel_text),
+        URIAction(label="查看桌況", uri=liff_lobby_url()),
+        MessageAction(label="回主畫面", text="主選單"),
+    ])
 
 # ----------------------------
-# Core: phone binding enforcement
+# Unified reply helpers (keep buttons stable)
 # ----------------------------
-def must_bind_phone(user_id: str) -> bool:
-    u = get_user(user_id)
-    return (not u) or (not (u["phone"] or "").strip())
-
-def start_bind_phone(reply_token: str, user_id: str):
-    upsert_state(user_id, "BIND_PHONE", {})
+def reply_main(reply_token: str, user_id: str, text: str):
     line_bot_api.reply_message(
         reply_token,
-        TextSendMessage(
-            text="⚠️ 請先綁定手機號才能使用本系統。\n請輸入手機號（09xxxxxxxx）："
-        )
+        TextSendMessage(text=text, quick_reply=main_menu_qr(user_id))
+    )
+
+def reply_sub(reply_token: str, text: str):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text=text, quick_reply=sub_menu_qr())
+    )
+
+def reply_custom(reply_token: str, text: str, quick_reply_obj):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text=text, quick_reply=quick_reply_obj)
     )
 
 # ----------------------------
-# Menu actions
+# Menu actions (LINE)
 # ----------------------------
 def show_main_menu(reply_token: str, user_id: str):
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="主選單：", quick_reply=main_menu_qr(user_id))
-    )
+    reply_main(reply_token, user_id, "請選擇功能：")
 
 def handle_contact(reply_token: str):
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="聯絡店家：", quick_reply=contact_shop_qr())
-    )
-
-def handle_table_query(reply_token: str):
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="桌況查詢：請選擇缺人數（點卡片可用LIFF加入）", quick_reply=table_query_qr())
-    )
+    reply_custom(reply_token, "聯絡店家：", contact_shop_qr())
 
 def handle_my(reply_token: str, user_id: str):
     u = get_user(user_id)
     if not u:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="系統忙碌，請稍後再試。", quick_reply=sub_menu_qr()))
+        reply_sub(reply_token, "系統忙碌，請稍後再試。")
         return
-
     msg = (
         f"我的資料：\n"
         f"暱稱：{u['nickname'] or '-'}\n"
         f"手機：{u['phone'] or '-'}\n"
-        f"配桌狀態：{get_my_latest_status_text(user_id)}\n"
+        f"配桌狀態：{my_latest_status_text(user_id)}\n"
         f"信用分數：{int(u['credit'] or 0)}\n"
         f"狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
     )
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=my_qr()))
+    reply_custom(reply_token, msg, my_qr())
 
-def handle_credit(reply_token: str, user_id: str):
-    u = get_user(user_id)
-    if not u:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。", quick_reply=sub_menu_qr()))
-        return
-    msg = f"您的信用分數：{int(u['credit'] or 0)}\n狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=my_qr()))
-
-# ----------------------------
-# Flow: open/match
-# ----------------------------
 def start_flow(reply_token: str, user_id: str, req_type: str):
-    # frozen users could be blocked; keep simple (still allow, but you can block if you want)
     upsert_state(user_id, "FLOW_SPEED", {"req_type": req_type})
     title = "開桌" if req_type == "open" else "配桌"
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=f"{title}：請選擇節奏", quick_reply=speed_qr()))
+    reply_custom(reply_token, f"{title}：請選擇手速", speed_qr())
 
 def ask_party(reply_token: str, user_id: str, data: dict):
     upsert_state(user_id, "FLOW_PARTY", data)
-    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇人數", quick_reply=party_qr()))
+    reply_custom(reply_token, "請選擇人數", party_qr())
 
 def ask_amount(reply_token: str, user_id: str, data: dict):
     upsert_state(user_id, "FLOW_AMOUNT", data)
-    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇金額", quick_reply=amount_qr()))
+    reply_custom(reply_token, "請選擇金額", amount_qr())
 
 def ask_rounds(reply_token: str, user_id: str, data: dict):
     upsert_state(user_id, "FLOW_ROUNDS", data)
-    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇將數", quick_reply=rounds_qr()))
+    reply_custom(reply_token, "請選擇將數", rounds_qr())
 
 def ask_remark(reply_token: str, user_id: str, data: dict):
     upsert_state(user_id, "FLOW_REMARK", data)
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="開桌備註（可略過）：\n直接輸入文字，或點「略過」", quick_reply=remark_qr())
-    )
+    reply_custom(reply_token, "開桌備註（可略過）：\n直接輸入文字，或點「略過」", remark_qr())
 
 def finalize_request(reply_token: str, user_id: str, data: dict, remark: str):
     req_type = data.get("req_type", "match")
@@ -811,115 +1161,406 @@ def finalize_request(reply_token: str, user_id: str, data: dict, remark: str):
     party_size = int(data.get("party_size", 1))
     amount = data.get("amount", "50/20")
     rounds = data.get("rounds", "2將")
-    req_id = create_request(user_id, req_type, speed, party_size, amount, rounds, remark or "")
+    remark = remark or ""
+
+    req_id = create_request(user_id, req_type, speed, party_size, amount, rounds, remark)
+    req = get_request(req_id)
     clear_state(user_id)
 
-    title = "開桌成功" if req_type == "open" else "配桌成功"
+    title = "開桌成功" if req_type == "open" else "配桌加入成功"
     msg = (
         f"🎉 {title}\n"
-        f"桌號：#{req_id}\n"
-        f"節奏：{speed}\n"
+        f"桌號：{display_table_no(req)}\n"
+        f"手速：{speed}\n"
         f"人數：{party_size}\n"
         f"金額：{amount}\n"
         f"將數：{rounds}\n"
-        f"備註：{remark or '無'}\n\n"
-        f"可到「桌況查詢」讓其他玩家用LIFF加入。"
     )
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=sub_menu_qr()))
+    if req_type == "open":
+        msg += f"備註：{remark if remark else '無'}\n"
+    msg += "\n桌況查詢請點「桌況查詢」進入 LIFF。"
+    reply_main(reply_token, user_id, msg)
 
 # ----------------------------
-# Shop backend handlers
+# Shop backend & customer info
 # ----------------------------
 def handle_shop_backend(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        reply_sub(reply_token, "您不是店家管理員。")
         return
     shop = get_shop()
     status = "營業" if shop and int(shop["is_open"] or 0) == 1 else "休息"
     msg = (
         f"店家後台（目前：{status}）\n"
         f"- 群設定 / 地圖設定 / 店家LINE設定：貼上連結即可\n"
+        f"- 營業/休息：休息會關閉玩家的開桌/配桌/桌況\n"
         f"- 新增管理員：產生 6 位碼（一次性 / {ADMIN_CODE_EXPIRE_MIN} 分鐘有效 / 上限{ADMIN_MAX_COUNT}位）\n"
-        f"- 管理員名單 / 移除管理員：可查看與移除"
+        f"- 管理員名單 / 移除管理員"
     )
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
-
-def handle_customer_info(reply_token: str, user_id: str):
-    if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
-        return
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("""
-    SELECT nickname, phone, credit, frozen, role
-    FROM users
-    WHERE phone IS NOT NULL AND TRIM(phone)!=''
-    ORDER BY created_at DESC
-    LIMIT 10
-    """)
-    rows = cur.fetchall()
-    conn.close()
-
-    if not rows:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有可顯示的客戶資料。", quick_reply=sub_menu_qr()))
-        return
-
-    lines = ["客戶資訊（最近10筆）："]
-    for r in rows:
-        lines.append(
-            f"- {r['nickname'] or '-'}｜{r['phone']}｜信用{int(r['credit'] or 0)}｜{'凍結' if int(r['frozen'] or 0)==1 else '正常'}｜{r['role']}"
-        )
-    line_bot_api.reply_message(reply_token, TextSendMessage(text="\n".join(lines), quick_reply=sub_menu_qr()))
-
-def handle_admin_list(reply_token: str, user_id: str):
-    if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
-        return
-    ids = list_shop_admin_user_ids()
-    if not ids:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前尚無管理員。", quick_reply=shop_backend_qr()))
-        return
-    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids])
-    msg += "\n\n（如要移除：點「移除管理員」後貼上 userId）"
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
-
-def prompt_remove_admin(reply_token: str, user_id: str):
-    if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
-        return
-    upsert_state(user_id, "REMOVE_ADMIN", {})
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="請貼上要移除的管理員 userId：", quick_reply=shop_backend_qr())
-    )
+    reply_custom(reply_token, msg, shop_backend_qr())
 
 def prompt_set_link(reply_token: str, user_id: str, field: str, label: str):
     if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        reply_sub(reply_token, "您不是店家管理員。")
         return
     upsert_state(user_id, "SET_SHOP_LINK", {"field": field, "label": label})
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text=f"請貼上「{label}」連結：", quick_reply=shop_backend_qr())
-    )
+    reply_custom(reply_token, f"請貼上「{label}」連結：", shop_backend_qr())
 
 def toggle_open(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        reply_sub(reply_token, "您不是店家管理員。")
         return
     shop = get_shop()
     cur_status = int(shop["is_open"] or 0) if shop else 1
     new_status = 0 if cur_status == 1 else 1
     update_shop_field("is_open", new_status)
-    msg = f"已切換為：{'營業' if new_status==1 else '休息'}"
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+    reply_custom(reply_token, f"已切換為：{'營業' if new_status==1 else '休息'}", shop_backend_qr())
 
 def generate_admin_code(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        reply_sub(reply_token, "您不是店家管理員。")
         return
     ok, msg = create_invite_code(user_id)
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+    reply_custom(reply_token, msg, shop_backend_qr())
+
+def handle_admin_list(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
+        return
+    ids = list_shop_admin_user_ids()
+    if not ids:
+        reply_custom(reply_token, "目前尚無管理員。", shop_backend_qr())
+        return
+    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids]) + "\n\n（移除：點「移除管理員」後貼上 userId）"
+    reply_custom(reply_token, msg, shop_backend_qr())
+
+def prompt_remove_admin(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
+        return
+    upsert_state(user_id, "REMOVE_ADMIN", {})
+    reply_custom(reply_token, "請貼上要移除的管理員 userId：", shop_backend_qr())
+
+def handle_customer_info(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
+        return
+    reply_custom(reply_token, "客戶資訊：請選擇", customer_info_qr())
+
+def start_customer_search(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
+        return
+    upsert_state(user_id, "CUSTOMER_SEARCH", {})
+    reply_custom(reply_token, "請輸入：暱稱關鍵字 或 手機末三碼（例如 123 或 阿明）", customer_info_qr())
+
+def do_customer_search(keyword: str):
+    keyword = (keyword or "").strip()
+    if not keyword:
+        return []
+    conn = db_conn()
+    cur = conn.cursor()
+    # phone last 3
+    if keyword.isdigit() and len(keyword) == 3:
+        cur.execute("""
+        SELECT user_id, nickname, phone, credit, frozen, created_at
+        FROM users
+        WHERE phone LIKE ?
+        ORDER BY created_at DESC
+        LIMIT 10
+        """, (f"%{keyword}",))
+    else:
+        cur.execute("""
+        SELECT user_id, nickname, phone, credit, frozen, created_at
+        FROM users
+        WHERE nickname LIKE ?
+        ORDER BY created_at DESC
+        LIMIT 10
+        """, (f"%{keyword}%",))
+    rows = cur.fetchall()
+    conn.close()
+    return rows
+
+def show_customer_detail(reply_token: str, admin_user_id: str, target_user_id: str):
+    if not is_shop_admin(admin_user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
+        return
+    u = get_user(target_user_id)
+    if not u or not (u["phone"] or "").strip():
+        reply_custom(reply_token, "找不到此用戶或未綁定手機。", customer_info_qr())
+        return
+    upsert_state(admin_user_id, "CUSTOMER_DEDUCT", {"target_user_id": target_user_id})
+    msg = (
+        f"客戶資料：\n"
+        f"暱稱：{u['nickname'] or '-'}\n"
+        f"手機：{u['phone']}\n"
+        f"信用分：{int(u['credit'] or 0)}\n"
+        f"狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}\n\n"
+        f"請選擇扣分項目："
+    )
+    reply_custom(reply_token, msg, deduction_qr())
+
+# ----------------------------
+# LIFF pages (Lobby / Table / Confirm)
+# ----------------------------
+LIFF_BASE_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Mahjong LIFF</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;padding:14px;background:#fafafa;}
+    .wrap{max-width:760px;margin:0 auto;}
+    .card{background:white;border:1px solid #e7e7e7;border-radius:12px;padding:12px;margin:10px 0;}
+    .row{display:flex;gap:10px;flex-wrap:wrap;}
+    .badge{display:inline-block;padding:3px 8px;border-radius:999px;background:#f2f2f2;font-size:12px;}
+    button{padding:10px 12px;border-radius:10px;border:0;background:#1a73e8;color:white;font-size:15px;cursor:pointer;}
+    button.secondary{background:#666;}
+    button:disabled{opacity:0.6;cursor:not-allowed;}
+    select{padding:10px;border-radius:10px;border:1px solid #ddd;background:white;}
+    a{color:#1a73e8;text-decoration:none;}
+    .muted{color:#666;font-size:13px;white-space:pre-wrap;}
+    .title{font-weight:700;font-size:20px;margin:6px 0;}
+    .small{font-size:13px;color:#666;}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="title" id="pageTitle">載入中…</div>
+    <div class="small" id="me"></div>
+    <div id="content"></div>
+    <div class="muted" id="status"></div>
+  </div>
+<script>
+  const LIFF_ID = "{{LIFF_ID}}";
+  const VIEW = "{{VIEW}}";
+  const REQ_ID = "{{REQ_ID}}";
+
+  const elTitle = document.getElementById("pageTitle");
+  const elMe = document.getElementById("me");
+  const elContent = document.getElementById("content");
+  const elStatus = document.getElementById("status");
+
+  function escapeHtml(s){
+    return (s||"").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  async function api(path, method="GET", body=null){
+    const opt = {method, headers: {"Content-Type":"application/json"}};
+    if(body) opt.body = JSON.stringify(body);
+    const res = await fetch(path, opt);
+    const data = await res.json();
+    return data;
+  }
+
+  function showError(msg){
+    elStatus.textContent = msg;
+  }
+
+  async function init(){
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if(!liff.isLoggedIn()){
+        liff.login();
+        return;
+      }
+      const profile = await liff.getProfile();
+      elMe.textContent = `已登入：${profile.displayName}`;
+      return profile;
+    }catch(e){
+      showError("LIFF 初始化失敗：" + (e && e.message ? e.message : e));
+      throw e;
+    }
+  }
+
+  async function viewLobby(profile){
+    elTitle.textContent = "桌況（LIFF 大廳）";
+    elContent.innerHTML = "<div class='muted'>載入桌列表…</div>";
+
+    const data = await api("/api/lobby?user_id="+encodeURIComponent(profile.userId));
+    if(!data.ok){
+      elContent.innerHTML = "";
+      showError(data.message || "載入失敗");
+      return;
+    }
+    if(!data.tables || data.tables.length===0){
+      elContent.innerHTML = "<div class='card'>目前沒有等待中的桌。</div>";
+      return;
+    }
+
+    let html = "";
+    data.tables.forEach(t=>{
+      html += `
+        <div class="card">
+          <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+          <div class="row" style="margin-top:6px;">
+            <span class="badge">金額 ${escapeHtml(t.amount)}</span>
+            <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
+            <span class="badge">手速 ${escapeHtml(t.speed)}</span>
+            <span class="badge">${escapeHtml(t.count_text)}</span>
+            <span class="badge">狀態 ${escapeHtml(t.status_text)}</span>
+          </div>
+          <div class="muted" style="margin-top:8px;">備註：${escapeHtml(t.remark || "無")}</div>
+          <div style="margin-top:10px;">
+            <button onclick="location.href='https://liff.line.me/{{LIFF_ID}}?view=table&req_id=${t.req_id}'">選這桌</button>
+          </div>
+        </div>
+      `;
+    });
+    elContent.innerHTML = html;
+  }
+
+  async function viewTable(profile, reqId){
+    elTitle.textContent = "加入桌位";
+    elContent.innerHTML = "<div class='muted'>載入桌況…</div>";
+
+    const st = await api("/api/table_status?req_id="+encodeURIComponent(reqId)+"&user_id="+encodeURIComponent(profile.userId));
+    if(!st.ok){
+      elContent.innerHTML = "";
+      showError(st.message || "載入失敗");
+      return;
+    }
+
+    const t = st.table;
+    elContent.innerHTML = `
+      <div class="card">
+        <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+        <div class="row" style="margin-top:6px;">
+          <span class="badge">金額 ${escapeHtml(t.amount)}</span>
+          <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
+          <span class="badge">手速 ${escapeHtml(t.speed)}</span>
+          <span class="badge">${escapeHtml(t.count_text)}</span>
+          <span class="badge">狀態 ${escapeHtml(t.status_text)}</span>
+        </div>
+        <div class="muted" style="margin-top:8px;">備註：${escapeHtml(t.remark || "無")}</div>
+      </div>
+
+      <div class="card">
+        <div style="margin-bottom:8px;"><b>選擇人數</b></div>
+        <div class="row">
+          <select id="party">
+            <option value="1">我1人</option>
+            <option value="2">我2人</option>
+            <option value="3">我3人</option>
+          </select>
+          <button id="btnJoin">加入</button>
+          <button class="secondary" onclick="location.href='https://liff.line.me/{{LIFF_ID}}?view=lobby'">回桌況</button>
+        </div>
+        <div class="muted" id="joinMsg" style="margin-top:10px;"></div>
+      </div>
+    `;
+
+    const btn = document.getElementById("btnJoin");
+    const sel = document.getElementById("party");
+    const joinMsg = document.getElementById("joinMsg");
+
+    btn.addEventListener("click", async ()=>{
+      btn.disabled = true;
+      joinMsg.textContent = "加入中…";
+      const partySize = parseInt(sel.value || "1", 10);
+      const res = await api("/api/join", "POST", { req_id: reqId, user_id: profile.userId, party_size: partySize });
+      joinMsg.textContent = res.message || "完成";
+      if(res.ok){
+        // if moved to confirming, guide to confirm view
+        if(res.to_confirm){
+          joinMsg.textContent += "\\n已進入確認階段，請到確認頁面。";
+          setTimeout(()=>{ location.href = 'https://liff.line.me/{{LIFF_ID}}?view=confirm&req_id='+reqId; }, 900);
+        }else{
+          setTimeout(()=>{ location.href = 'https://liff.line.me/{{LIFF_ID}}?view=lobby'; }, 900);
+        }
+      }else{
+        btn.disabled = false;
+      }
+    });
+  }
+
+  async function viewConfirm(profile, reqId){
+    elTitle.textContent = "最後確認";
+    elContent.innerHTML = "<div class='muted'>載入確認狀態…</div>";
+
+    const st = await api("/api/table_status?req_id="+encodeURIComponent(reqId)+"&user_id="+encodeURIComponent(profile.userId));
+    if(!st.ok){
+      elContent.innerHTML = "";
+      showError(st.message || "載入失敗");
+      return;
+    }
+    const t = st.table;
+
+    elContent.innerHTML = `
+      <div class="card">
+        <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+        <div class="row" style="margin-top:6px;">
+          <span class="badge">金額 ${escapeHtml(t.amount)}</span>
+          <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
+          <span class="badge">手速 ${escapeHtml(t.speed)}</span>
+          <span class="badge">${escapeHtml(t.count_text)}</span>
+          <span class="badge">狀態 ${escapeHtml(t.status_text)}</span>
+        </div>
+        <div class="muted" style="margin-top:8px;">備註：${escapeHtml(t.remark || "無")}</div>
+      </div>
+
+      <div class="card">
+        <div class="muted">人數已滿，請選擇是否確認成桌：</div>
+        <div class="row" style="margin-top:10px;">
+          <button id="btnConfirm">加入確認</button>
+          <button class="secondary" id="btnGiveUp">放棄</button>
+          <button class="secondary" onclick="location.href='https://liff.line.me/{{LIFF_ID}}?view=lobby'">回桌況</button>
+        </div>
+        <div class="muted" id="cmsg" style="margin-top:10px;"></div>
+      </div>
+    `;
+
+    const cmsg = document.getElementById("cmsg");
+    const btnC = document.getElementById("btnConfirm");
+    const btnG = document.getElementById("btnGiveUp");
+
+    btnC.addEventListener("click", async ()=>{
+      btnC.disabled = true; btnG.disabled = true;
+      cmsg.textContent = "送出確認中…";
+      const res = await api("/api/confirm", "POST", { req_id: reqId, user_id: profile.userId });
+      cmsg.textContent = res.message || "完成";
+      if(res.ok && res.filled){
+        cmsg.textContent += "\\n已成桌，稍後可關閉視窗。";
+        setTimeout(()=>{ liff.closeWindow(); }, 1000);
+      }else{
+        btnC.disabled = false; btnG.disabled = false;
+      }
+    });
+
+    btnG.addEventListener("click", async ()=>{
+      btnC.disabled = true; btnG.disabled = true;
+      cmsg.textContent = "放棄中…";
+      const res = await api("/api/giveup", "POST", { req_id: reqId, user_id: profile.userId });
+      cmsg.textContent = res.message || "完成";
+      if(res.ok){
+        setTimeout(()=>{ location.href = 'https://liff.line.me/{{LIFF_ID}}?view=lobby'; }, 900);
+      }else{
+        btnC.disabled = false; btnG.disabled = false;
+      }
+    });
+  }
+
+  (async ()=>{
+    const profile = await init();
+
+    if(VIEW === "lobby"){
+      await viewLobby(profile);
+    } else if(VIEW === "table"){
+      await viewTable(profile, REQ_ID);
+    } else if(VIEW === "confirm"){
+      await viewConfirm(profile, REQ_ID);
+    } else {
+      elTitle.textContent = "未知頁面";
+      showError("view 參數錯誤");
+    }
+  })();
+</script>
+</body>
+</html>
+"""
 
 # ----------------------------
 # Routes
@@ -942,84 +1583,93 @@ def callback():
         abort(400)
     return "OK"
 
-# LIFF: join page
-LIFF_JOIN_HTML = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>LIFF Join</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
-  <style>
-    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;padding:18px;}
-    .box{max-width:560px;margin:0 auto;}
-    .btn{display:block;width:100%;padding:12px 14px;margin-top:10px;border:0;border-radius:10px;font-size:16px;}
-  </style>
-</head>
-<body>
-  <div class="box">
-    <h3>加入桌位</h3>
-    <div id="status">初始化中…</div>
-    <button class="btn" id="btn" disabled>加入（預設 1 人）</button>
-  </div>
-<script>
-  const LIFF_ID = "{{LIFF_ID}}";
-  const reqId = "{{REQ_ID}}";
-  const action = "{{ACTION}}";
-
-  const statusEl = document.getElementById('status');
-  const btn = document.getElementById('btn');
-
-  function qs(name){
-    const u = new URL(window.location.href);
-    return u.searchParams.get(name);
-  }
-
-  async function init(){
-    try{
-      await liff.init({ liffId: LIFF_ID });
-      if(!liff.isLoggedIn()){
-        liff.login();
-        return;
-      }
-      const profile = await liff.getProfile();
-      statusEl.textContent = `已登入：${profile.displayName}，準備加入桌號 #${reqId}`;
-      btn.disabled = false;
-
-      btn.addEventListener('click', async ()=>{
-        btn.disabled = true;
-        statusEl.textContent = "加入中…";
-        const res = await fetch("/api/join", {
-          method: "POST",
-          headers: {"Content-Type":"application/json"},
-          body: JSON.stringify({ req_id: reqId, user_id: profile.userId, party_size: 1 })
-        });
-        const data = await res.json();
-        statusEl.textContent = data.message || "完成";
-        if(data.ok){
-          setTimeout(()=>{ liff.closeWindow(); }, 800);
-        }else{
-          btn.disabled = false;
-        }
-      });
-    }catch(e){
-      statusEl.textContent = "LIFF 初始化失敗：" + (e && e.message ? e.message : e);
-    }
-  }
-  init();
-</script>
-</body>
-</html>
-"""
-
 @app.route("/liff", methods=["GET"])
 def liff_page():
-    action = request.args.get("action", "join")
-    req_id = request.args.get("req_id", "").strip()
-    if not req_id.isdigit():
+    view = (request.args.get("view") or "lobby").strip()
+    req_id = (request.args.get("req_id") or "").strip()
+    if view not in ("lobby", "table", "confirm"):
+        view = "lobby"
+    if view in ("table", "confirm") and not req_id.isdigit():
         return "Bad req_id", 400
-    return render_template_string(LIFF_JOIN_HTML, LIFF_ID=LIFF_ID, REQ_ID=req_id, ACTION=action)
+    return render_template_string(LIFF_BASE_HTML, LIFF_ID=LIFF_ID, VIEW=view, REQ_ID=req_id)
+
+@app.route("/export/<export_id>", methods=["GET"])
+def download_export(export_id):
+    fp = get_export_path(export_id)
+    if not fp:
+        return "Link expired or not found", 404
+    return send_file(fp, as_attachment=True, download_name=os.path.basename(fp))
+
+# ----------------------------
+# LIFF APIs
+# ----------------------------
+@app.route("/api/lobby", methods=["GET"])
+def api_lobby():
+    user_id = (request.args.get("user_id") or "").strip()
+    if not user_id:
+        return jsonify({"ok": False, "message": "missing user_id"}), 400
+
+    if not shop_is_open():
+        return jsonify({"ok": False, "message": "店家目前休息中，暫停服務。"}), 200
+
+    get_or_create_user(user_id, nickname="")
+    if must_bind_phone(user_id):
+        return jsonify({"ok": False, "message": "請先回到 LINE 對話綁定手機後再使用桌況。"}), 200
+    if is_frozen(user_id):
+        return jsonify({"ok": False, "message": "你的帳號目前凍結，暫時無法使用桌況/加入。"}), 200
+
+    tables = []
+    for r in list_lobby_tables(limit=200):
+        current = request_participant_sum(int(r["req_id"]))
+        missing = max(0, TABLE_SIZE - current)
+        status = r["status"]
+        status_text = "等待中" if status == "waiting" else ("確認中" if status == "confirming" else status)
+        tables.append({
+            "req_id": int(r["req_id"]),
+            "table_no": display_table_no(r),
+            "amount": r["amount"] or "-",
+            "rounds": r["rounds"] or "-",
+            "speed": r["speed"] or "-",
+            "remark": r["remark"] or "",
+            "count_text": f"{current}/{TABLE_SIZE} 缺{missing}",
+            "status_text": status_text,
+        })
+    return jsonify({"ok": True, "tables": tables}), 200
+
+@app.route("/api/table_status", methods=["GET"])
+def api_table_status():
+    req_id = (request.args.get("req_id") or "").strip()
+    user_id = (request.args.get("user_id") or "").strip()
+    if not req_id.isdigit() or not user_id:
+        return jsonify({"ok": False, "message": "bad params"}), 400
+
+    if not shop_is_open():
+        return jsonify({"ok": False, "message": "店家目前休息中，暫停服務。"}), 200
+
+    get_or_create_user(user_id, nickname="")
+    if must_bind_phone(user_id):
+        return jsonify({"ok": False, "message": "請先回到 LINE 對話綁定手機後再使用。"}), 200
+
+    req = get_request(int(req_id))
+    if not req:
+        return jsonify({"ok": False, "message": "找不到此桌"}), 200
+
+    current = request_participant_sum(int(req_id))
+    missing = max(0, TABLE_SIZE - current)
+    status = req["status"]
+    status_text = "等待中" if status == "waiting" else ("確認中" if status == "confirming" else status)
+
+    table = {
+        "req_id": int(req["req_id"]),
+        "table_no": display_table_no(req),
+        "amount": req["amount"] or "-",
+        "rounds": req["rounds"] or "-",
+        "speed": req["speed"] or "-",
+        "remark": req["remark"] or "",
+        "count_text": f"{current}/{TABLE_SIZE} 缺{missing}",
+        "status_text": status_text,
+    }
+    return jsonify({"ok": True, "table": table}), 200
 
 @app.route("/api/join", methods=["POST"])
 def api_join():
@@ -1031,14 +1681,55 @@ def api_join():
     if not str(req_id).isdigit() or not user_id:
         return jsonify({"ok": False, "message": "參數錯誤"}), 400
 
-    # Ensure user exists
-    get_or_create_user(user_id, nickname="")
+    if not shop_is_open():
+        return jsonify({"ok": False, "message": "店家目前休息中，暫停服務。"}), 200
 
-    # Enforce phone binding for join
+    get_or_create_user(user_id, nickname="")
     if must_bind_phone(user_id):
-        return jsonify({"ok": False, "message": "請先回到LINE對話綁定手機後再加入。"}), 200
+        return jsonify({"ok": False, "message": "請先回到 LINE 對話綁定手機後再加入。"}), 200
+    if is_frozen(user_id):
+        return jsonify({"ok": False, "message": "你的帳號目前凍結，暫時無法加入。"}), 200
 
     ok, msg = join_request(int(req_id), user_id, party_size=party_size)
+    to_confirm = False
+    if ok:
+        req = get_request(int(req_id))
+        if req and req["status"] == "confirming":
+            to_confirm = True
+    return jsonify({"ok": ok, "message": msg, "to_confirm": to_confirm}), 200
+
+@app.route("/api/confirm", methods=["POST"])
+def api_confirm():
+    data = request.get_json(silent=True) or {}
+    req_id = data.get("req_id")
+    user_id = (data.get("user_id") or "").strip()
+
+    if not str(req_id).isdigit() or not user_id:
+        return jsonify({"ok": False, "message": "參數錯誤"}), 400
+
+    if not shop_is_open():
+        return jsonify({"ok": False, "message": "店家目前休息中，暫停服務。"}), 200
+
+    get_or_create_user(user_id, nickname="")
+    if must_bind_phone(user_id):
+        return jsonify({"ok": False, "message": "請先回到 LINE 對話綁定手機。"}), 200
+
+    ok, msg = confirm_join(int(req_id), user_id)
+    req = get_request(int(req_id))
+    filled = bool(req and req["status"] == "filled")
+    return jsonify({"ok": ok, "message": msg, "filled": filled}), 200
+
+@app.route("/api/giveup", methods=["POST"])
+def api_giveup():
+    data = request.get_json(silent=True) or {}
+    req_id = data.get("req_id")
+    user_id = (data.get("user_id") or "").strip()
+
+    if not str(req_id).isdigit() or not user_id:
+        return jsonify({"ok": False, "message": "參數錯誤"}), 400
+
+    get_or_create_user(user_id, nickname="")
+    ok, msg = give_up(int(req_id), user_id)
     return jsonify({"ok": ok, "message": msg}), 200
 
 # ----------------------------
@@ -1049,7 +1740,7 @@ def on_text(event: MessageEvent):
     user_id = event.source.user_id
     text = (event.message.text or "").strip()
 
-    # Ensure user exists and keep nickname from LINE profile if available
+    # best-effort profile
     try:
         profile = line_bot_api.get_profile(user_id)
         nickname = profile.display_name or ""
@@ -1057,67 +1748,51 @@ def on_text(event: MessageEvent):
         nickname = ""
     get_or_create_user(user_id, nickname=nickname)
 
-    # Read current state
     state, data = get_state(user_id)
 
-    # ---------
-    # Global commands
-    # ---------
+    # 主選單
     if text == "主選單":
         clear_state(user_id)
         show_main_menu(event.reply_token, user_id)
         return
 
-    # ---------
-    # Forced phone binding (global gate)
-    # Allow only binding-related states/actions if phone missing
-    # ---------
+    # 強制綁手機（未綁定：任何輸入都導向綁定）
     if must_bind_phone(user_id):
-        # If user is not in binding state, start binding
-        if state not in ("BIND_PHONE",):
-            start_bind_phone(event.reply_token, user_id)
+        if state != "BIND_PHONE":
+            upsert_state(user_id, "BIND_PHONE", {})
+            reply_main(event.reply_token, user_id, "⚠️ 請先綁定手機號才能使用本系統。\n請輸入手機號（09xxxxxxxx）：")
             return
 
-        # Handle phone input
         if PHONE_RE.match(text):
             set_user_phone(user_id, text)
             clear_state(user_id)
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="✅ 綁定完成", quick_reply=main_menu_qr(user_id))
-            )
+            reply_main(event.reply_token, user_id, "✅ 綁定完成")
             return
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="⚠️ 手機格式不正確，請輸入 09xxxxxxxx：")
-            )
-            return
+        reply_main(event.reply_token, user_id, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：")
+        return
 
-    # ---------
-    # State machine handlers (after phone is bound)
-    # ---------
+    # ---- state machine
     if state == "EDIT_NICKNAME":
         if len(text) < 1 or len(text) > 20:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="暱稱長度需 1~20 字，請重新輸入：", quick_reply=my_qr()))
+            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", my_qr())
             return
         set_user_nickname(user_id, text)
         clear_state(user_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 暱稱更新完成", quick_reply=my_qr()))
+        reply_custom(event.reply_token, "✅ 暱稱更新完成", my_qr())
         return
 
     if state == "EDIT_PHONE":
         if PHONE_RE.match(text):
             set_user_phone(user_id, text)
             clear_state(user_id)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 手機更新完成", quick_reply=my_qr()))
+            reply_custom(event.reply_token, "✅ 手機更新完成", my_qr())
             return
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", quick_reply=my_qr()))
+        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", my_qr())
         return
 
     if state == "FLOW_SPEED":
         if text not in MATCH_SPEEDS:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇節奏。", quick_reply=speed_qr()))
+            reply_custom(event.reply_token, "請用按鍵選擇手速。", speed_qr())
             return
         data["speed"] = text
         ask_party(event.reply_token, user_id, data)
@@ -1125,7 +1800,7 @@ def on_text(event: MessageEvent):
 
     if state == "FLOW_PARTY":
         if text not in MATCH_PARTY_SIZES:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇人數。", quick_reply=party_qr()))
+            reply_custom(event.reply_token, "請用按鍵選擇人數。", party_qr())
             return
         data["party_size"] = int(text.replace("我", "").replace("人", "").strip())
         ask_amount(event.reply_token, user_id, data)
@@ -1133,7 +1808,7 @@ def on_text(event: MessageEvent):
 
     if state == "FLOW_AMOUNT":
         if text not in MATCH_AMOUNTS:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇金額。", quick_reply=amount_qr()))
+            reply_custom(event.reply_token, "請用按鍵選擇金額。", amount_qr())
             return
         data["amount"] = text
         ask_rounds(event.reply_token, user_id, data)
@@ -1141,115 +1816,175 @@ def on_text(event: MessageEvent):
 
     if state == "FLOW_ROUNDS":
         if text not in MATCH_ROUNDS:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇將數。", quick_reply=rounds_qr()))
+            reply_custom(event.reply_token, "請用按鍵選擇將數。", rounds_qr())
             return
         data["rounds"] = text
-        ask_remark(event.reply_token, user_id, data)
+        # open has remark; match no remark
+        if data.get("req_type") == "open":
+            ask_remark(event.reply_token, user_id, data)
+        else:
+            # finalize immediately for match
+            finalize_request(event.reply_token, user_id, data, remark="")
         return
 
     if state == "FLOW_REMARK":
         if text == "略過":
             finalize_request(event.reply_token, user_id, data, remark="")
             return
-        # Any text is remark
         finalize_request(event.reply_token, user_id, data, remark=text)
         return
 
     if state == "SET_SHOP_LINK":
         if not is_shop_admin(user_id):
             clear_state(user_id)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+            reply_sub(event.reply_token, "您不是店家管理員。")
             return
         field = (data.get("field") or "").strip()
         label = (data.get("label") or "").strip()
-        # basic url check
         if not (text.startswith("http://") or text.startswith("https://")):
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ 請貼上有效連結（需 http/https）：", quick_reply=shop_backend_qr()))
+            reply_custom(event.reply_token, "⚠️ 請貼上有效連結（需 http/https）：", shop_backend_qr())
             return
         update_shop_field(field, text)
         clear_state(user_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ {label} 設定完成", quick_reply=shop_backend_qr()))
-        return
-
-    if state == "REDEEM_ADMIN_CODE":
-        if not text.isdigit() or len(text) != 6:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入 6 位數驗證碼：", quick_reply=sub_menu_qr()))
-            return
-        ok, msg = redeem_invite_code(text, user_id)
-        clear_state(user_id)
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=main_menu_qr(user_id)))
+        reply_custom(event.reply_token, f"✅ {label} 設定完成", shop_backend_qr())
         return
 
     if state == "REMOVE_ADMIN":
         if not is_shop_admin(user_id):
             clear_state(user_id)
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+            reply_sub(event.reply_token, "您不是店家管理員。")
             return
         target_id = text.strip()
         if not target_id:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請貼上要移除的 userId：", quick_reply=shop_backend_qr()))
+            reply_custom(event.reply_token, "請貼上要移除的 userId：", shop_backend_qr())
             return
-        removed = remove_shop_admin(target_id)
+        remove_shop_admin(target_id)
         clear_state(user_id)
-        if removed:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已移除管理員（若存在）", quick_reply=shop_backend_qr()))
-        else:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="移除失敗。", quick_reply=shop_backend_qr()))
+        reply_custom(event.reply_token, "✅ 已移除管理員（若存在）", shop_backend_qr())
         return
 
-    # ---------
-    # Normal menu routing (no active state)
-    # ---------
-    if text == "開桌":
-        start_flow(event.reply_token, user_id, req_type="open")
+    if state == "REDEEM_ADMIN_CODE":
+        if not text.isdigit() or len(text) != 6:
+            reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
+            return
+        ok, msg = redeem_invite_code(text, user_id)
+        clear_state(user_id)
+        reply_custom(event.reply_token, msg, shop_backend_qr())
         return
 
-    if text == "配桌":
-        start_flow(event.reply_token, user_id, req_type="match")
+    if state == "CUSTOMER_SEARCH":
+        rows = do_customer_search(text)
+        if not rows:
+            reply_custom(event.reply_token, "找不到符合的用戶（僅查有資料者）。請換個關鍵字或末三碼再試。", customer_info_qr())
+            return
+
+        if len(rows) == 1:
+            clear_state(user_id)
+            show_customer_detail(event.reply_token, user_id, rows[0]["user_id"])
+            return
+
+        # multiple results: list and ask to pick by number
+        mapping = []
+        lines = ["查詢結果（回覆「選擇1/2/3...」）："]
+        for i, r in enumerate(rows, start=1):
+            phone = (r["phone"] or "")
+            if not phone:
+                continue
+            lines.append(f"{i}) {r['nickname'] or '-'}｜{phone}｜信用{int(r['credit'] or 0)}｜{'凍結' if int(r['frozen'] or 0)==1 else '正常'}")
+            mapping.append(r["user_id"])
+        upsert_state(user_id, "CUSTOMER_PICK", {"candidates": mapping})
+        reply_custom(event.reply_token, "\n".join(lines), customer_info_qr())
         return
 
-    if text == "桌況查詢":
-        handle_table_query(event.reply_token)
+    if state == "CUSTOMER_PICK":
+        m = re.match(r"^選擇(\d+)$", text)
+        candidates = data.get("candidates") or []
+        if not m:
+            reply_custom(event.reply_token, "請回覆格式：選擇1 / 選擇2 / ...", customer_info_qr())
+            return
+        idx = int(m.group(1)) - 1
+        if idx < 0 or idx >= len(candidates):
+            reply_custom(event.reply_token, "編號錯誤，請重新選擇。", customer_info_qr())
+            return
+        clear_state(user_id)
+        show_customer_detail(event.reply_token, user_id, candidates[idx])
         return
 
-    if text in ("缺1", "缺2", "缺3"):
-        need = int(text.replace("缺", "").strip())
-        flex = flex_table_list(need)
-        if flex is None:
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"目前沒有缺{need}的桌。", quick_reply=sub_menu_qr()))
-        else:
-            line_bot_api.reply_message(event.reply_token, flex)
+    if state == "CUSTOMER_DEDUCT":
+        target_user_id = (data.get("target_user_id") or "").strip()
+        if not target_user_id:
+            clear_state(user_id)
+            reply_custom(event.reply_token, "目標用戶遺失，請重新查詢。", customer_info_qr())
+            return
+        if text.startswith("扣分 "):
+            reason = text.replace("扣分 ", "", 1).strip()
+            delta = None
+            for name, d in DEDUCTION_OPTIONS:
+                if name == reason:
+                    delta = d
+                    break
+            if delta is None:
+                reply_custom(event.reply_token, "扣分項目錯誤，請用按鍵操作。", deduction_qr())
+                return
+            ok, msg = apply_deduction(target_user_id, delta, reason, by_user_id=user_id)
+            reply_custom(event.reply_token, msg, deduction_qr())
+            return
+        # if admin types other words, keep in deduction view
+        reply_custom(event.reply_token, "請用按鍵選擇扣分項目。", deduction_qr())
         return
 
+    # ---- menu routing (no state)
     if text == "我的":
         handle_my(event.reply_token, user_id)
         return
 
     if text == "修改暱稱":
         upsert_state(user_id, "EDIT_NICKNAME", {})
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入新的暱稱（1~20字）：", quick_reply=my_qr()))
+        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_qr())
         return
 
     if text == "修改手機":
         upsert_state(user_id, "EDIT_PHONE", {})
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入新的手機號（09xxxxxxxx）：", quick_reply=my_qr()))
-        return
-
-    if text == "查信用分":
-        handle_credit(event.reply_token, user_id)
+        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_qr())
         return
 
     if text == "聯絡店家":
         handle_contact(event.reply_token)
         return
 
-    # Shop backend
-    if text == "店家後台":
-        handle_shop_backend(event.reply_token, user_id)
+    # Active request guard: if already in active, clicking open/match shows cancel/view/main
+    if text == "開桌":
+        if not ensure_shop_open_or_message(event.reply_token, user_id):
+            return
+        if not ensure_not_frozen_or_message(event.reply_token, user_id):
+            return
+        active = find_active_request_for_user(user_id)
+        if active:
+            reply_custom(event.reply_token, f"你目前已有進行中的桌：{display_table_no(active)}\n請選擇：", active_block_qr(active["req_type"]))
+            return
+        start_flow(event.reply_token, user_id, req_type="open")
         return
 
-    if text == "客戶資訊":
-        handle_customer_info(event.reply_token, user_id)
+    if text == "配桌":
+        if not ensure_shop_open_or_message(event.reply_token, user_id):
+            return
+        if not ensure_not_frozen_or_message(event.reply_token, user_id):
+            return
+        active = find_active_request_for_user(user_id)
+        if active:
+            reply_custom(event.reply_token, f"你目前已有進行中的桌：{display_table_no(active)}\n請選擇：", active_block_qr(active["req_type"]))
+            return
+        start_flow(event.reply_token, user_id, req_type="match")
+        return
+
+    if text in ("取消開桌", "取消配桌"):
+        ok, msg = cancel_for_user(user_id)
+        reply_main(event.reply_token, user_id, f"{'✅' if ok else '⚠️'} {msg}")
+        return
+
+    # shop backend
+    if text == "店家後台":
+        handle_shop_backend(event.reply_token, user_id)
         return
 
     if text == "群設定":
@@ -1280,13 +2015,28 @@ def on_text(event: MessageEvent):
         prompt_remove_admin(event.reply_token, user_id)
         return
 
-    # Redeem code shortcut (anyone can type "輸入6位碼" to redeem)
     if text == "輸入6位碼":
         upsert_state(user_id, "REDEEM_ADMIN_CODE", {})
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入 6 位數驗證碼：", quick_reply=sub_menu_qr()))
+        reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
         return
 
-    # Default fallback: show main menu
+    if text == "客戶資訊":
+        handle_customer_info(event.reply_token, user_id)
+        return
+
+    if text == "客戶查詢":
+        start_customer_search(event.reply_token, user_id)
+        return
+
+    if text == "導出用戶":
+        if not is_shop_admin(user_id):
+            reply_sub(event.reply_token, "您不是店家管理員。")
+            return
+        ok, msg = create_export_file(created_by=user_id)
+        reply_custom(event.reply_token, msg, customer_info_qr())
+        return
+
+    # If user typed something else: show main menu
     show_main_menu(event.reply_token, user_id)
 
 # ----------------------------
@@ -1295,6 +2045,5 @@ def on_text(event: MessageEvent):
 init_db()
 
 if __name__ == "__main__":
-    # Local run
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
