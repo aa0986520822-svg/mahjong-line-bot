@@ -1,840 +1,1300 @@
+# app.py
+# Mahjong Table System (Python/Flask + LINE OA) - Render deploy-ready
+#
+# ✅ Features (per your latest requirements)
+# 1) 主選單 Quick Reply：開桌、配桌、桌況查詢(缺1/缺2/缺3)、我的、聯絡店家
+#    （店家身分再多：店家後台、客戶資訊）
+# 2) 聯絡店家：只有 店家LINE / 地圖（URI 連結）
+# 3) 取消所有「返回」按鍵；主選單不需要回主選單按鍵；其他頁面可有「主選單」
+# 4) 強制綁定手機：未綁定 → 只能先綁手機（成功回「綁定完成」）
+#    我的頁：顯示暱稱/手機/配桌狀態/信用分數，且可修改暱稱/手機、查信用分
+# 5) 店家後台：群設定/地圖設定/店家LINE設定、營業/休息、6位碼新增管理員
+#    - 6位碼：自動產出、一次性、10分鐘有效、管理員上限5位、名單/移除
+# 6) 開桌/配桌分開
+#    - 配桌：快手/慢手/不限；人數：我1/2/3；金額：50/20 100/20 100/50 200/50；將數：2將/3將
+#    - 備註：可略過（沒輸入可跳過）
+# 7) 桌況查詢：缺1/缺2/缺3 → Flex 卡片，按「用LIFF加入」即可加入（預設加入1人）
+#
+# Required ENV on Render:
+#   CHANNEL_ACCESS_TOKEN
+#   CHANNEL_SECRET
+# Optional ENV:
+#   DATABASE_PATH (default: /tmp/mahjong.db)
+#   LIFF_ID (default: 2009050373-HHA8grO4)
+#   BASE_URL (default: https://mahjong-line-bot.onrender.com)
+
 import os
 import re
+import json
 import sqlite3
-import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 
-from flask import Flask, request, abort, g
+from flask import Flask, request, abort, jsonify, render_template_string
 
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    QuickReply, QuickReplyButton, MessageAction, URIAction
+    MessageEvent, TextMessage,
+    TextSendMessage,
+    QuickReply, QuickReplyButton,
+    MessageAction, URIAction,
+    FlexSendMessage
 )
 
+# ----------------------------
+# Config
+# ----------------------------
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "").strip()
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "").strip()
+
+DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
+LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
+BASE_URL = os.getenv("BASE_URL", "https://mahjong-line-bot.onrender.com").strip().rstrip("/")
+
+TABLE_SIZE = 4
+
+MATCH_SPEEDS = ["快手", "慢手", "不限"]
+MATCH_PARTY_SIZES = ["我1人", "我2人", "我3人"]
+MATCH_AMOUNTS = ["50/20", "100/20", "100/50", "200/50"]
+MATCH_ROUNDS = ["2將", "3將"]
+
+PHONE_RE = re.compile(r"^09\d{8}$")
+
+ADMIN_MAX_COUNT = 5
+ADMIN_CODE_EXPIRE_MIN = 10
+
+# Credit (kept for "我的" 查詢)
+CREDIT_FREEZE_THRESHOLD = 60
+
 app = Flask(__name__)
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
-# ========= ENV =========
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", "").strip()
-DB_PATH = os.getenv("DB_PATH", "mahjong.db")
+# ----------------------------
+# Time helpers
+# ----------------------------
+def iso_now() -> str:
+    return datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
 
-if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
-    print("WARNING: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET is not set")
+def dt_to_iso(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN) if LINE_CHANNEL_ACCESS_TOKEN else None
-handler = WebhookHandler(LINE_CHANNEL_SECRET) if LINE_CHANNEL_SECRET else None
+def iso_to_dt(s: str) -> datetime:
+    return datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
 
-# ========= STATE (in-memory) =========
-# user_state[user_id] = {"mode": "...", "data": {...}}
-user_state = {}
-
-# ========= Helpers =========
-def now_str():
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-def db():
-    if "db" not in g:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        g.db = conn
-    return g.db
-
-@app.teardown_appcontext
-def close_db(_e=None):
-    conn = g.pop("db", None)
-    if conn:
-        conn.close()
+# ----------------------------
+# DB helpers
+# ----------------------------
+def db_conn():
+    conn = sqlite3.connect(DATABASE_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-    c = conn.cursor()
+    conn = db_conn()
+    cur = conn.cursor()
 
-    c.execute("""
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS users (
         user_id TEXT PRIMARY KEY,
-        nickname TEXT DEFAULT '',
-        phone TEXT DEFAULT '',
+        nickname TEXT,
+        phone TEXT,
+        role TEXT DEFAULT 'customer',   -- customer / shop_admin / shop_owner
         credit INTEGER DEFAULT 100,
         frozen INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT ''
+        created_at TEXT
     )
     """)
 
-    c.execute("""
+    cur.execute("""
     CREATE TABLE IF NOT EXISTS shops (
-        shop_id TEXT PRIMARY KEY,
+        shop_id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT DEFAULT '店家',
+        group_link TEXT,
+        map_link TEXT,
+        shop_line_link TEXT,
         is_open INTEGER DEFAULT 1,
-        group_link TEXT DEFAULT '',
-        map_link TEXT DEFAULT '',
-        shop_line_link TEXT DEFAULT ''
+        created_at TEXT
     )
     """)
 
-    # one default shop
-    c.execute("INSERT OR IGNORE INTO shops(shop_id, name, is_open, group_link, map_link, shop_line_link) VALUES (?,?,?,?,?,?)",
-              ("default", "預設店家", 1, "", "", ""))
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS owner (
-        id INTEGER PRIMARY KEY CHECK (id=1),
-        owner_user_id TEXT DEFAULT ''
-    )
-    """)
-    c.execute("INSERT OR IGNORE INTO owner(id, owner_user_id) VALUES (1, '')")
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS admins (
-        user_id TEXT PRIMARY KEY,
-        joined_at TEXT DEFAULT ''
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS admin_invite (
-        id INTEGER PRIMARY KEY CHECK (id=1),
-        code TEXT DEFAULT ''
-    )
-    """)
-    c.execute("INSERT OR IGNORE INTO admin_invite(id, code) VALUES (1, '')")
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS tables (
-        table_id TEXT PRIMARY KEY,
-        created_by TEXT,
-        people_need INTEGER DEFAULT 4,
-        amount TEXT DEFAULT '',
-        hand TEXT DEFAULT '不限',          -- 快手/慢手/不限
-        time_type TEXT DEFAULT '現在',     -- 現在/預約/其他
-        reserve_slot TEXT DEFAULT '',      -- 早上/下午/晚上/半夜
-        reserve_time TEXT DEFAULT '',      -- 19:00
-        note TEXT DEFAULT '',
-        status TEXT DEFAULT 'waiting',     -- waiting/filled/canceled
-        created_at TEXT DEFAULT ''
-    )
-    """)
-
-    c.execute("""
-    CREATE TABLE IF NOT EXISTS table_members (
-        table_id TEXT,
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS shop_admins (
+        shop_id INTEGER,
         user_id TEXT,
-        joined_at TEXT DEFAULT '',
-        PRIMARY KEY(table_id, user_id)
+        PRIMARY KEY (shop_id, user_id)
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS admin_invite_codes (
+        code TEXT PRIMARY KEY,
+        shop_id INTEGER,
+        created_by TEXT,
+        created_at TEXT,
+        expire_at TEXT,
+        used_by TEXT,
+        used_at TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS user_state (
+        user_id TEXT PRIMARY KEY,
+        state TEXT,
+        data TEXT,
+        updated_at TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS match_requests (
+        req_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        creator_user_id TEXT,
+        req_type TEXT,               -- open / match
+        speed TEXT,
+        party_size INTEGER,
+        amount TEXT,
+        rounds TEXT,
+        remark TEXT,
+        status TEXT DEFAULT 'waiting', -- waiting/filled/cancelled
+        created_at TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS request_participants (
+        req_id INTEGER,
+        user_id TEXT,
+        party_size INTEGER,
+        joined_at TEXT,
+        PRIMARY KEY (req_id, user_id)
+    )
+    """)
+
+    conn.commit()
+
+    # Ensure one shop exists
+    cur.execute("SELECT shop_id FROM shops ORDER BY shop_id LIMIT 1")
+    row = cur.fetchone()
+    if row is None:
+        cur.execute("INSERT INTO shops (name, created_at) VALUES (?, ?)", ("店家", iso_now()))
+        conn.commit()
+
+    conn.close()
+
+def get_shop():
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM shops ORDER BY shop_id LIMIT 1")
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def update_shop_field(field: str, value):
+    if field not in ("group_link", "map_link", "shop_line_link", "is_open", "name"):
+        return False
+    shop = get_shop()
+    if not shop:
+        return False
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute(f"UPDATE shops SET {field}=? WHERE shop_id=?", (value, shop["shop_id"]))
+    conn.commit()
+    conn.close()
+    return True
+
+def get_or_create_user(user_id: str, nickname: str = ""):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    if row is None:
+        cur.execute(
+            "INSERT INTO users (user_id, nickname, created_at) VALUES (?, ?, ?)",
+            (user_id, nickname or "", iso_now())
+        )
+        conn.commit()
+    else:
+        if nickname is not None and nickname != row["nickname"]:
+            cur.execute("UPDATE users SET nickname=? WHERE user_id=?", (nickname, user_id))
+            conn.commit()
+    conn.close()
+
+def get_user(user_id: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def set_user_phone(user_id: str, phone: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET phone=? WHERE user_id=?", (phone, user_id))
     conn.commit()
     conn.close()
 
-init_db()
-
-def ensure_user(user_id: str):
-    conn = db()
-    row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-    if not row:
-        conn.execute(
-            "INSERT INTO users(user_id, nickname, phone, credit, frozen, created_at) VALUES (?,?,?,?,?,?)",
-            (user_id, "", "", 100, 0, now_str())
-        )
-        conn.commit()
-
-def get_owner_id():
-    row = db().execute("SELECT owner_user_id FROM owner WHERE id=1").fetchone()
-    return (row["owner_user_id"] or "").strip() if row else ""
-
-def set_owner_if_empty(user_id: str):
-    oid = get_owner_id()
-    if not oid:
-        db().execute("UPDATE owner SET owner_user_id=? WHERE id=1", (user_id,))
-        db().commit()
-
-def is_admin(user_id: str) -> bool:
-    row = db().execute("SELECT 1 FROM admins WHERE user_id=?", (user_id,)).fetchone()
-    return row is not None
-
-def add_admin(user_id: str):
-    db().execute("INSERT OR IGNORE INTO admins(user_id, joined_at) VALUES (?,?)", (user_id, now_str()))
-    db().commit()
-
-def set_invite_code(code: str):
-    db().execute("UPDATE admin_invite SET code=? WHERE id=1", (code,))
-    db().commit()
-
-def get_invite_code() -> str:
-    row = db().execute("SELECT code FROM admin_invite WHERE id=1").fetchone()
-    return (row["code"] or "").strip() if row else ""
-
-def get_shop():
-    return db().execute("SELECT * FROM shops WHERE shop_id='default'").fetchone()
-
-def update_shop_field(field: str, value: str):
-    if field not in ("group_link", "map_link", "shop_line_link", "is_open", "name"):
-        return
-    db().execute(f"UPDATE shops SET {field}=? WHERE shop_id='default'", (value,))
-    db().commit()
-
-def user_is_frozen(user_id: str) -> bool:
-    row = db().execute("SELECT frozen FROM users WHERE user_id=?", (user_id,)).fetchone()
-    return bool(row["frozen"]) if row else False
-
-def user_credit(user_id: str) -> int:
-    row = db().execute("SELECT credit FROM users WHERE user_id=?", (user_id,)).fetchone()
-    return int(row["credit"]) if row else 0
-
-def set_frozen(user_id: str, frozen: int):
-    db().execute("UPDATE users SET frozen=? WHERE user_id=?", (int(frozen), user_id))
-    db().commit()
-
-def set_credit(user_id: str, credit: int):
-    db().execute("UPDATE users SET credit=? WHERE user_id=?", (int(credit), user_id))
-    db().commit()
-
-def deduct_credit(user_id: str, delta: int):
-    c = user_credit(user_id)
-    c2 = c + int(delta)
-    if c2 < 0:
-        c2 = 0
-    set_credit(user_id, c2)
-    if c2 < 60:
-        set_frozen(user_id, 1)
-    return c2
-
-def get_user_profile(user_id: str):
-    row = db().execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
-    if not row:
-        return None
-    return row
-
-def set_nickname(user_id: str, nickname: str):
-    db().execute("UPDATE users SET nickname=? WHERE user_id=?", (nickname.strip(), user_id))
-    db().commit()
-
-def set_phone(user_id: str, phone: str):
-    db().execute("UPDATE users SET phone=? WHERE user_id=?", (phone.strip(), user_id))
-    db().commit()
-
-def current_table_status(user_id: str) -> str:
-    # find latest waiting table where user is member
-    row = db().execute("""
-        SELECT t.table_id, t.status, t.amount, t.hand, t.time_type, t.reserve_slot, t.reserve_time
-        FROM table_members m
-        JOIN tables t ON t.table_id = m.table_id
-        WHERE m.user_id=? AND t.status='waiting'
-        ORDER BY t.created_at DESC
-        LIMIT 1
-    """, (user_id,)).fetchone()
-    if not row:
-        return "未配桌"
-    tt = row["time_type"]
-    if tt == "預約":
-        when = f"{row['reserve_slot']} {row['reserve_time']}".strip()
-    else:
-        when = tt
-    return f"等待中（桌號:{row['table_id']}｜{row['hand']}｜{row['amount']}｜{when}）"
-
-def reply_text(event, text: str, quick_reply=None):
-    if not line_bot_api:
-        return
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=text, quick_reply=quick_reply))
-
-def push_text(user_id: str, text: str, quick_reply=None):
-    if not line_bot_api:
-        return
-    line_bot_api.push_message(user_id, TextSendMessage(text=text, quick_reply=quick_reply))
-
-# ========= Quick Replies =========
-def qr_main(user_id: str) -> QuickReply:
-    # 主選單：不放「回主選單」
-    items = [
-        QuickReplyButton(action=MessageAction(label="🎲 開桌/配桌", text="開桌/配桌")),
-        QuickReplyButton(action=MessageAction(label="📊 桌況查詢", text="桌況查詢")),
-        QuickReplyButton(action=MessageAction(label="👤 我的", text="我的")),
-        QuickReplyButton(action=MessageAction(label="☎️ 聯絡店家", text="聯絡店家")),
-    ]
-    if is_admin(user_id):
-        items.append(QuickReplyButton(action=MessageAction(label="🧾 客戶資訊", text="客戶資訊")))
-        items.append(QuickReplyButton(action=MessageAction(label="🏪 店家後台", text="店家後台")))
-    return QuickReply(items=items)
-
-def qr_home(user_id: str) -> QuickReply:
-    # 其他頁面才放「主選單」
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_contact() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="📲 店家LINE", text="店家LINE")),
-        QuickReplyButton(action=MessageAction(label="🗺 地圖", text="地圖")),
-    ])
-
-def qr_open_hand() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="⚡ 快手", text="快手")),
-        QuickReplyButton(action=MessageAction(label="🐢 慢手", text="慢手")),
-        QuickReplyButton(action=MessageAction(label="♾ 不限", text="不限")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_people_need() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="2人桌", text="2")),
-        QuickReplyButton(action=MessageAction(label="3人桌", text="3")),
-        QuickReplyButton(action=MessageAction(label="4人桌", text="4")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_time_type() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="現在", text="現在")),
-        QuickReplyButton(action=MessageAction(label="預約時間", text="預約時間")),
-        QuickReplyButton(action=MessageAction(label="其他補充", text="其他補充")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_reserve_slot() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="早上", text="早上")),
-        QuickReplyButton(action=MessageAction(label="下午", text="下午")),
-        QuickReplyButton(action=MessageAction(label="晚上", text="晚上")),
-        QuickReplyButton(action=MessageAction(label="半夜", text="半夜")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_table_status() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="缺1", text="桌況 缺1")),
-        QuickReplyButton(action=MessageAction(label="缺2", text="桌況 缺2")),
-        QuickReplyButton(action=MessageAction(label="缺3", text="桌況 缺3")),
-        QuickReplyButton(action=MessageAction(label="全部", text="桌況 全部")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_shop_admin() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="群設定", text="群設定")),
-        QuickReplyButton(action=MessageAction(label="地圖設定", text="地圖設定")),
-        QuickReplyButton(action=MessageAction(label="店家LINE設定", text="店家LINE設定")),
-        QuickReplyButton(action=MessageAction(label="營業/休息", text="營業/休息")),
-        QuickReplyButton(action=MessageAction(label="產生管理員碼", text="產生管理員碼")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-def qr_credit_deduct() -> QuickReply:
-    return QuickReply(items=[
-        QuickReplyButton(action=MessageAction(label="放鳥 -20", text="扣分 放鳥")),
-        QuickReplyButton(action=MessageAction(label="取消 -5", text="扣分 取消")),
-        QuickReplyButton(action=MessageAction(label="遲到 -10", text="扣分 遲到")),
-        QuickReplyButton(action=MessageAction(label="玩家檢舉 -15", text="扣分 玩家檢舉")),
-        QuickReplyButton(action=MessageAction(label="凍結/解除", text="凍結切換")),
-        QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-    ])
-
-# ========= Business Logic =========
-def can_play(user_id: str):
-    ensure_user(user_id)
-    if user_is_frozen(user_id):
-        return False, "⛔ 你目前已被凍結（信用分低於60或店家手動凍結），無法開桌/配桌/加入桌。\n請聯絡店家處理。"
-    shop = get_shop()
-    if shop and int(shop["is_open"]) == 0:
-        return False, "🚫 店家目前休息中，暫停配桌。"
-    return True, ""
-
-def create_table(user_id: str, people_need: int, amount: str, hand: str, time_type: str, slot: str, rtime: str, note: str):
-    tid = f"T{int(time.time())}{random.randint(100,999)}"
-    conn = db()
-    conn.execute("""
-        INSERT INTO tables(table_id, created_by, people_need, amount, hand, time_type, reserve_slot, reserve_time, note, status, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, (tid, user_id, people_need, amount, hand, time_type, slot, rtime, note, "waiting", now_str()))
-    conn.execute("""
-        INSERT OR IGNORE INTO table_members(table_id, user_id, joined_at) VALUES (?,?,?)
-    """, (tid, user_id, now_str()))
+def set_user_nickname(user_id: str, nickname: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET nickname=? WHERE user_id=?", (nickname, user_id))
     conn.commit()
-    return tid
+    conn.close()
 
-def list_tables(missing=None):
-    # missing: 1/2/3
-    rows = db().execute("""
-        SELECT t.*,
-          (SELECT COUNT(1) FROM table_members m WHERE m.table_id=t.table_id) AS joined
-        FROM tables t
-        WHERE t.status='waiting'
-        ORDER BY t.created_at DESC
-        LIMIT 20
-    """).fetchall()
+def set_user_role(user_id: str, role: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET role=? WHERE user_id=?", (role, user_id))
+    conn.commit()
+    conn.close()
 
-    out = []
-    for r in rows:
-        joined = int(r["joined"])
-        need = int(r["people_need"])
-        miss = max(need - joined, 0)
-        if missing is not None and miss != missing:
-            continue
-        tt = r["time_type"]
-        when = tt
-        if tt == "預約":
-            when = f"{r['reserve_slot']} {r['reserve_time']}".strip()
-        note = (r["note"] or "").strip()
-        note_line = f"\n備註：{note}" if note else ""
-        out.append(f"桌號:{r['table_id']}｜{r['hand']}｜{r['amount']}｜缺{miss}｜{when}{note_line}")
-    return out
+def is_shop_admin(user_id: str) -> bool:
+    u = get_user(user_id)
+    if u and u["role"] in ("shop_admin", "shop_owner"):
+        return True
+    shop = get_shop()
+    if not shop:
+        return False
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM shop_admins WHERE shop_id=? AND user_id=?", (shop["shop_id"], user_id))
+    row = cur.fetchone()
+    conn.close()
+    return True if row else False
 
-def find_user_by_nick_or_last3(query: str):
-    q = query.strip()
-    if not q:
-        return None
-    # last3 digits
-    conn = db()
-    if re.fullmatch(r"\d{3}", q):
-        row = conn.execute("""
-            SELECT * FROM users
-            WHERE phone LIKE ? OR phone LIKE ?
-            ORDER BY created_at DESC LIMIT 1
-        """, (f"%{q}", f"%{q}%")).fetchone()
-        return row
-    # nickname contains
-    row = conn.execute("""
-        SELECT * FROM users
-        WHERE nickname LIKE ?
-        ORDER BY created_at DESC LIMIT 1
-    """, (f"%{q}%",)).fetchone()
+def count_shop_admins() -> int:
+    shop = get_shop()
+    if not shop:
+        return 0
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) AS c FROM shop_admins WHERE shop_id=?", (shop["shop_id"],))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["c"] if row else 0)
+
+def list_shop_admin_user_ids():
+    shop = get_shop()
+    if not shop:
+        return []
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT user_id FROM shop_admins WHERE shop_id=? ORDER BY used_by", (shop["shop_id"],))
+    rows = cur.fetchall()
+    conn.close()
+    return [r["user_id"] for r in rows]
+
+def add_shop_admin(user_id: str) -> (bool, str):
+    shop = get_shop()
+    if not shop:
+        return False, "店家資料不存在。"
+    if count_shop_admins() >= ADMIN_MAX_COUNT:
+        return False, f"⚠️ 管理員已達上限（{ADMIN_MAX_COUNT}位），請先移除後再新增。"
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO shop_admins (shop_id, user_id) VALUES (?, ?)", (shop["shop_id"], user_id))
+    conn.commit()
+    conn.close()
+    set_user_role(user_id, "shop_admin")
+    return True, "已新增為管理員。"
+
+def remove_shop_admin(user_id: str) -> bool:
+    shop = get_shop()
+    if not shop:
+        return False
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM shop_admins WHERE shop_id=? AND user_id=?", (shop["shop_id"], user_id))
+    conn.commit()
+    conn.close()
+    u = get_user(user_id)
+    if u and u["role"] == "shop_admin":
+        set_user_role(user_id, "customer")
+    return True
+
+def upsert_state(user_id: str, state: str, data: dict):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO user_state (user_id, state, data, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET
+        state = excluded.state,
+        data = excluded.data,
+        updated_at = excluded.updated_at
+    """, (user_id, state, json.dumps(data or {}, ensure_ascii=False), iso_now()))
+    conn.commit()
+    conn.close()
+
+def get_state(user_id: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM user_state WHERE user_id=?", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return None, {}
+    try:
+        data = json.loads(row["data"] or "{}")
+    except Exception:
+        data = {}
+    return row["state"], data
+
+def clear_state(user_id: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM user_state WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+# ----------------------------
+# Match request helpers
+# ----------------------------
+def create_request(creator_user_id: str, req_type: str, speed: str, party_size: int, amount: str, rounds: str, remark: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO match_requests (creator_user_id, req_type, speed, party_size, amount, rounds, remark, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (creator_user_id, req_type, speed, int(party_size), amount, rounds, remark or "", iso_now()))
+    req_id = cur.lastrowid
+    cur.execute("""
+    INSERT OR IGNORE INTO request_participants (req_id, user_id, party_size, joined_at)
+    VALUES (?, ?, ?, ?)
+    """, (req_id, creator_user_id, int(party_size), iso_now()))
+    conn.commit()
+    conn.close()
+    mark_filled_if_needed(req_id)
+    return req_id
+
+def get_request(req_id: int):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM match_requests WHERE req_id=?", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
     return row
 
-# ========= Flask Routes =========
-@app.route("/")
-def health():
+def participant_sum(req_id: int) -> int:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT COALESCE(SUM(party_size),0) AS s FROM request_participants WHERE req_id=?", (int(req_id),))
+    row = cur.fetchone()
+    conn.close()
+    return int(row["s"] if row else 0)
+
+def mark_filled_if_needed(req_id: int):
+    current = participant_sum(req_id)
+    if current >= TABLE_SIZE:
+        conn = db_conn()
+        cur = conn.cursor()
+        cur.execute("UPDATE match_requests SET status='filled' WHERE req_id=?", (int(req_id),))
+        conn.commit()
+        conn.close()
+
+def join_request(req_id: int, user_id: str, party_size: int = 1) -> (bool, str):
+    req = get_request(req_id)
+    if not req:
+        return False, "找不到此桌。"
+    if req["status"] != "waiting":
+        return False, "此桌已結束或無法加入。"
+
+    current = participant_sum(req_id)
+    missing = TABLE_SIZE - current
+    if missing <= 0:
+        mark_filled_if_needed(req_id)
+        return False, "此桌已滿。"
+    if int(party_size) > missing:
+        return False, f"目前只缺 {missing} 人，加入失敗。"
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT OR REPLACE INTO request_participants (req_id, user_id, party_size, joined_at)
+    VALUES (?, ?, ?, ?)
+    """, (int(req_id), user_id, int(party_size), iso_now()))
+    conn.commit()
+    conn.close()
+
+    mark_filled_if_needed(req_id)
+    return True, "加入成功。"
+
+def list_waiting_requests_by_need(need: int, limit: int = 8):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT * FROM match_requests
+    WHERE status='waiting'
+    ORDER BY req_id DESC
+    LIMIT ?
+    """, (limit * 8,))
+    rows = cur.fetchall()
+    conn.close()
+
+    result = []
+    for r in rows:
+        current = participant_sum(r["req_id"])
+        missing = TABLE_SIZE - current
+        if missing == int(need):
+            result.append((r, current, missing))
+        if len(result) >= limit:
+            break
+    return result
+
+def get_my_latest_status_text(user_id: str) -> str:
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT req_id, status FROM match_requests
+    WHERE creator_user_id=?
+    ORDER BY req_id DESC LIMIT 1
+    """, (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return "無進行中"
+    if row["status"] == "waiting":
+        return f"等待中（桌號 #{row['req_id']}）"
+    if row["status"] == "filled":
+        return f"已成桌（桌號 #{row['req_id']}）"
+    if row["status"] == "cancelled":
+        return f"已取消（桌號 #{row['req_id']}）"
+    return "無進行中"
+
+# ----------------------------
+# Admin code (6 digits)
+# ----------------------------
+def cleanup_expired_codes():
+    shop = get_shop()
+    if not shop:
+        return
+    now = datetime.utcnow()
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT code, expire_at, used_by FROM admin_invite_codes WHERE shop_id=?", (shop["shop_id"],))
+    rows = cur.fetchall()
+    for r in rows:
+        if r["used_by"]:
+            continue
+        try:
+            exp = iso_to_dt(r["expire_at"])
+        except Exception:
+            exp = now - timedelta(days=1)
+        if exp < now:
+            cur.execute("DELETE FROM admin_invite_codes WHERE code=?", (r["code"],))
+    conn.commit()
+    conn.close()
+
+def create_invite_code(created_by: str) -> (bool, str):
+    shop = get_shop()
+    if not shop:
+        return False, "店家資料不存在。"
+    if count_shop_admins() >= ADMIN_MAX_COUNT:
+        return False, f"⚠️ 管理員已達上限（{ADMIN_MAX_COUNT}位），請先移除後再新增。"
+
+    cleanup_expired_codes()
+
+    for _ in range(30):
+        code = f"{random.randint(0, 999999):06d}"
+        conn = db_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM admin_invite_codes WHERE code=?", (code,))
+        if cur.fetchone():
+            conn.close()
+            continue
+
+        now = datetime.utcnow()
+        expire_at = now + timedelta(minutes=ADMIN_CODE_EXPIRE_MIN)
+        cur.execute("""
+        INSERT INTO admin_invite_codes (code, shop_id, created_by, created_at, expire_at)
+        VALUES (?, ?, ?, ?, ?)
+        """, (code, shop["shop_id"], created_by, dt_to_iso(now), dt_to_iso(expire_at)))
+        conn.commit()
+        conn.close()
+        return True, f"✅ 6位數驗證碼：{code}\n有效期限：{ADMIN_CODE_EXPIRE_MIN} 分鐘\n（僅能使用一次）"
+
+    return False, "產生失敗，請再試一次。"
+
+def redeem_invite_code(code: str, user_id: str) -> (bool, str):
+    shop = get_shop()
+    if not shop:
+        return False, "店家資料不存在。"
+
+    cleanup_expired_codes()
+
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM admin_invite_codes WHERE code=? AND shop_id=?", (code, shop["shop_id"]))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False, "無效的 6 位碼或已過期。"
+    if row["used_by"]:
+        conn.close()
+        return False, "此 6 位碼已使用。"
+
+    # Expire check
+    try:
+        exp = iso_to_dt(row["expire_at"])
+    except Exception:
+        exp = datetime.utcnow() - timedelta(days=1)
+    if exp < datetime.utcnow():
+        cur.execute("DELETE FROM admin_invite_codes WHERE code=?", (code,))
+        conn.commit()
+        conn.close()
+        return False, "此 6 位碼已過期。"
+
+    # Admin limit check
+    if count_shop_admins() >= ADMIN_MAX_COUNT:
+        conn.close()
+        return False, f"⚠️ 管理員已達上限（{ADMIN_MAX_COUNT}位），請先移除後再新增。"
+
+    # Mark used
+    cur.execute("""
+    UPDATE admin_invite_codes
+    SET used_by=?, used_at=?
+    WHERE code=?
+    """, (user_id, iso_now(), code))
+    conn.commit()
+    conn.close()
+
+    ok, msg = add_shop_admin(user_id)
+    if not ok:
+        return False, msg
+    return True, "✅ 已新增為管理員。"
+
+# ----------------------------
+# Quick Reply builders
+# ----------------------------
+def qr(actions):
+    return QuickReply(items=[QuickReplyButton(action=a) for a in actions])
+
+def main_menu_qr(user_id: str):
+    actions = [
+        MessageAction(label="開桌", text="開桌"),
+        MessageAction(label="配桌", text="配桌"),
+        MessageAction(label="桌況查詢", text="桌況查詢"),
+        MessageAction(label="我的", text="我的"),
+        MessageAction(label="聯絡店家", text="聯絡店家"),
+    ]
+    if is_shop_admin(user_id):
+        actions.append(MessageAction(label="店家後台", text="店家後台"))
+        actions.append(MessageAction(label="客戶資訊", text="客戶資訊"))
+    return qr(actions)
+
+def sub_menu_qr():
+    return qr([MessageAction(label="主選單", text="主選單")])
+
+def contact_shop_qr():
+    shop = get_shop()
+    line_link = (shop["shop_line_link"] or "").strip() if shop else ""
+    map_link = (shop["map_link"] or "").strip() if shop else ""
+    actions = []
+    if line_link:
+        actions.append(URIAction(label="店家LINE", uri=line_link))
+    if map_link:
+        actions.append(URIAction(label="地圖", uri=map_link))
+    if not actions:
+        actions = [MessageAction(label="主選單", text="主選單")]
+    return qr(actions)
+
+def speed_qr():
+    return qr([
+        MessageAction(label="快手", text="快手"),
+        MessageAction(label="慢手", text="慢手"),
+        MessageAction(label="不限", text="不限"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def party_qr():
+    return qr([
+        MessageAction(label="我1人", text="我1人"),
+        MessageAction(label="我2人", text="我2人"),
+        MessageAction(label="我3人", text="我3人"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def amount_qr():
+    return qr([
+        MessageAction(label="50/20", text="50/20"),
+        MessageAction(label="100/20", text="100/20"),
+        MessageAction(label="100/50", text="100/50"),
+        MessageAction(label="200/50", text="200/50"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def rounds_qr():
+    return qr([
+        MessageAction(label="2將", text="2將"),
+        MessageAction(label="3將", text="3將"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def remark_qr():
+    return qr([
+        MessageAction(label="略過", text="略過"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def table_query_qr():
+    return qr([
+        MessageAction(label="缺1", text="缺1"),
+        MessageAction(label="缺2", text="缺2"),
+        MessageAction(label="缺3", text="缺3"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def my_qr():
+    return qr([
+        MessageAction(label="修改暱稱", text="修改暱稱"),
+        MessageAction(label="修改手機", text="修改手機"),
+        MessageAction(label="查信用分", text="查信用分"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def shop_backend_qr():
+    return qr([
+        MessageAction(label="群設定", text="群設定"),
+        MessageAction(label="地圖設定", text="地圖設定"),
+        MessageAction(label="店家LINE設定", text="店家LINE設定"),
+        MessageAction(label="營業/休息", text="營業/休息"),
+        MessageAction(label="新增管理員(6位碼)", text="新增管理員"),
+        MessageAction(label="管理員名單", text="管理員名單"),
+        MessageAction(label="移除管理員", text="移除管理員"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+# ----------------------------
+# Flex: table list with LIFF join
+# ----------------------------
+def flex_table_list(need: int):
+    items = list_waiting_requests_by_need(need, limit=8)
+    if not items:
+        return None
+
+    bubbles = []
+    for r, current, missing in items:
+        req_id = int(r["req_id"])
+        join_uri = f"https://liff.line.me/{LIFF_ID}?action=join&req_id={req_id}"
+
+        summary = f"缺{missing}｜{r['speed']}｜{r['amount']}｜{r['rounds']}"
+        remark = (r["remark"] or "").strip()
+        remark_text = f"備註：{remark}" if remark else "備註：無"
+
+        bubbles.append({
+            "type": "bubble",
+            "size": "mega",
+            "body": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {"type": "text", "text": f"桌號 #{req_id}", "weight": "bold", "size": "lg"},
+                    {"type": "text", "text": summary, "size": "md", "wrap": True},
+                    {"type": "text", "text": f"目前：{current}/{TABLE_SIZE}", "size": "sm", "color": "#666666"},
+                    {"type": "text", "text": remark_text, "size": "sm", "wrap": True, "color": "#666666"},
+                ]
+            },
+            "footer": {
+                "type": "box",
+                "layout": "vertical",
+                "spacing": "sm",
+                "contents": [
+                    {
+                        "type": "button",
+                        "style": "primary",
+                        "action": {"type": "uri", "label": "用LIFF加入", "uri": join_uri}
+                    }
+                ]
+            }
+        })
+
+    payload = {"type": "carousel", "contents": bubbles}
+    return FlexSendMessage(alt_text=f"桌況查詢 缺{need}", contents=payload)
+
+# ----------------------------
+# Core: phone binding enforcement
+# ----------------------------
+def must_bind_phone(user_id: str) -> bool:
+    u = get_user(user_id)
+    return (not u) or (not (u["phone"] or "").strip())
+
+def start_bind_phone(reply_token: str, user_id: str):
+    upsert_state(user_id, "BIND_PHONE", {})
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(
+            text="⚠️ 請先綁定手機號才能使用本系統。\n請輸入手機號（09xxxxxxxx）："
+        )
+    )
+
+# ----------------------------
+# Menu actions
+# ----------------------------
+def show_main_menu(reply_token: str, user_id: str):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="主選單：", quick_reply=main_menu_qr(user_id))
+    )
+
+def handle_contact(reply_token: str):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="聯絡店家：", quick_reply=contact_shop_qr())
+    )
+
+def handle_table_query(reply_token: str):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="桌況查詢：請選擇缺人數（點卡片可用LIFF加入）", quick_reply=table_query_qr())
+    )
+
+def handle_my(reply_token: str, user_id: str):
+    u = get_user(user_id)
+    if not u:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="系統忙碌，請稍後再試。", quick_reply=sub_menu_qr()))
+        return
+
+    msg = (
+        f"我的資料：\n"
+        f"暱稱：{u['nickname'] or '-'}\n"
+        f"手機：{u['phone'] or '-'}\n"
+        f"配桌狀態：{get_my_latest_status_text(user_id)}\n"
+        f"信用分數：{int(u['credit'] or 0)}\n"
+        f"狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
+    )
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=my_qr()))
+
+def handle_credit(reply_token: str, user_id: str):
+    u = get_user(user_id)
+    if not u:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="查詢失敗，請稍後再試。", quick_reply=sub_menu_qr()))
+        return
+    msg = f"您的信用分數：{int(u['credit'] or 0)}\n狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=my_qr()))
+
+# ----------------------------
+# Flow: open/match
+# ----------------------------
+def start_flow(reply_token: str, user_id: str, req_type: str):
+    # frozen users could be blocked; keep simple (still allow, but you can block if you want)
+    upsert_state(user_id, "FLOW_SPEED", {"req_type": req_type})
+    title = "開桌" if req_type == "open" else "配桌"
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=f"{title}：請選擇節奏", quick_reply=speed_qr()))
+
+def ask_party(reply_token: str, user_id: str, data: dict):
+    upsert_state(user_id, "FLOW_PARTY", data)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇人數", quick_reply=party_qr()))
+
+def ask_amount(reply_token: str, user_id: str, data: dict):
+    upsert_state(user_id, "FLOW_AMOUNT", data)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇金額", quick_reply=amount_qr()))
+
+def ask_rounds(reply_token: str, user_id: str, data: dict):
+    upsert_state(user_id, "FLOW_ROUNDS", data)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text="請選擇將數", quick_reply=rounds_qr()))
+
+def ask_remark(reply_token: str, user_id: str, data: dict):
+    upsert_state(user_id, "FLOW_REMARK", data)
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="開桌備註（可略過）：\n直接輸入文字，或點「略過」", quick_reply=remark_qr())
+    )
+
+def finalize_request(reply_token: str, user_id: str, data: dict, remark: str):
+    req_type = data.get("req_type", "match")
+    speed = data.get("speed", "不限")
+    party_size = int(data.get("party_size", 1))
+    amount = data.get("amount", "50/20")
+    rounds = data.get("rounds", "2將")
+    req_id = create_request(user_id, req_type, speed, party_size, amount, rounds, remark or "")
+    clear_state(user_id)
+
+    title = "開桌成功" if req_type == "open" else "配桌成功"
+    msg = (
+        f"🎉 {title}\n"
+        f"桌號：#{req_id}\n"
+        f"節奏：{speed}\n"
+        f"人數：{party_size}\n"
+        f"金額：{amount}\n"
+        f"將數：{rounds}\n"
+        f"備註：{remark or '無'}\n\n"
+        f"可到「桌況查詢」讓其他玩家用LIFF加入。"
+    )
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=sub_menu_qr()))
+
+# ----------------------------
+# Shop backend handlers
+# ----------------------------
+def handle_shop_backend(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    shop = get_shop()
+    status = "營業" if shop and int(shop["is_open"] or 0) == 1 else "休息"
+    msg = (
+        f"店家後台（目前：{status}）\n"
+        f"- 群設定 / 地圖設定 / 店家LINE設定：貼上連結即可\n"
+        f"- 新增管理員：產生 6 位碼（一次性 / {ADMIN_CODE_EXPIRE_MIN} 分鐘有效 / 上限{ADMIN_MAX_COUNT}位）\n"
+        f"- 管理員名單 / 移除管理員：可查看與移除"
+    )
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+
+def handle_customer_info(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    SELECT nickname, phone, credit, frozen, role
+    FROM users
+    WHERE phone IS NOT NULL AND TRIM(phone)!=''
+    ORDER BY created_at DESC
+    LIMIT 10
+    """)
+    rows = cur.fetchall()
+    conn.close()
+
+    if not rows:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前沒有可顯示的客戶資料。", quick_reply=sub_menu_qr()))
+        return
+
+    lines = ["客戶資訊（最近10筆）："]
+    for r in rows:
+        lines.append(
+            f"- {r['nickname'] or '-'}｜{r['phone']}｜信用{int(r['credit'] or 0)}｜{'凍結' if int(r['frozen'] or 0)==1 else '正常'}｜{r['role']}"
+        )
+    line_bot_api.reply_message(reply_token, TextSendMessage(text="\n".join(lines), quick_reply=sub_menu_qr()))
+
+def handle_admin_list(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    ids = list_shop_admin_user_ids()
+    if not ids:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="目前尚無管理員。", quick_reply=shop_backend_qr()))
+        return
+    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids])
+    msg += "\n\n（如要移除：點「移除管理員」後貼上 userId）"
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+
+def prompt_remove_admin(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    upsert_state(user_id, "REMOVE_ADMIN", {})
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="請貼上要移除的管理員 userId：", quick_reply=shop_backend_qr())
+    )
+
+def prompt_set_link(reply_token: str, user_id: str, field: str, label: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    upsert_state(user_id, "SET_SHOP_LINK", {"field": field, "label": label})
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text=f"請貼上「{label}」連結：", quick_reply=shop_backend_qr())
+    )
+
+def toggle_open(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    shop = get_shop()
+    cur_status = int(shop["is_open"] or 0) if shop else 1
+    new_status = 0 if cur_status == 1 else 1
+    update_shop_field("is_open", new_status)
+    msg = f"已切換為：{'營業' if new_status==1 else '休息'}"
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+
+def generate_admin_code(reply_token: str, user_id: str):
+    if not is_shop_admin(user_id):
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+        return
+    ok, msg = create_invite_code(user_id)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=msg, quick_reply=shop_backend_qr()))
+
+# ----------------------------
+# Routes
+# ----------------------------
+@app.route("/", methods=["GET"])
+def home():
     return "OK"
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"ok": True, "time": iso_now()})
 
 @app.route("/callback", methods=["POST"])
 def callback():
-    if not handler or not line_bot_api:
-        return "LINE not configured", 500
-
     signature = request.headers.get("X-Line-Signature", "")
     body = request.get_data(as_text=True)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         abort(400)
-
     return "OK"
 
-# ========= Message Handler =========
+# LIFF: join page
+LIFF_JOIN_HTML = """
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>LIFF Join</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans TC",sans-serif;padding:18px;}
+    .box{max-width:560px;margin:0 auto;}
+    .btn{display:block;width:100%;padding:12px 14px;margin-top:10px;border:0;border-radius:10px;font-size:16px;}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h3>加入桌位</h3>
+    <div id="status">初始化中…</div>
+    <button class="btn" id="btn" disabled>加入（預設 1 人）</button>
+  </div>
+<script>
+  const LIFF_ID = "{{LIFF_ID}}";
+  const reqId = "{{REQ_ID}}";
+  const action = "{{ACTION}}";
+
+  const statusEl = document.getElementById('status');
+  const btn = document.getElementById('btn');
+
+  function qs(name){
+    const u = new URL(window.location.href);
+    return u.searchParams.get(name);
+  }
+
+  async function init(){
+    try{
+      await liff.init({ liffId: LIFF_ID });
+      if(!liff.isLoggedIn()){
+        liff.login();
+        return;
+      }
+      const profile = await liff.getProfile();
+      statusEl.textContent = `已登入：${profile.displayName}，準備加入桌號 #${reqId}`;
+      btn.disabled = false;
+
+      btn.addEventListener('click', async ()=>{
+        btn.disabled = true;
+        statusEl.textContent = "加入中…";
+        const res = await fetch("/api/join", {
+          method: "POST",
+          headers: {"Content-Type":"application/json"},
+          body: JSON.stringify({ req_id: reqId, user_id: profile.userId, party_size: 1 })
+        });
+        const data = await res.json();
+        statusEl.textContent = data.message || "完成";
+        if(data.ok){
+          setTimeout(()=>{ liff.closeWindow(); }, 800);
+        }else{
+          btn.disabled = false;
+        }
+      });
+    }catch(e){
+      statusEl.textContent = "LIFF 初始化失敗：" + (e && e.message ? e.message : e);
+    }
+  }
+  init();
+</script>
+</body>
+</html>
+"""
+
+@app.route("/liff", methods=["GET"])
+def liff_page():
+    action = request.args.get("action", "join")
+    req_id = request.args.get("req_id", "").strip()
+    if not req_id.isdigit():
+        return "Bad req_id", 400
+    return render_template_string(LIFF_JOIN_HTML, LIFF_ID=LIFF_ID, REQ_ID=req_id, ACTION=action)
+
+@app.route("/api/join", methods=["POST"])
+def api_join():
+    data = request.get_json(silent=True) or {}
+    req_id = data.get("req_id")
+    user_id = (data.get("user_id") or "").strip()
+    party_size = int(data.get("party_size") or 1)
+
+    if not str(req_id).isdigit() or not user_id:
+        return jsonify({"ok": False, "message": "參數錯誤"}), 400
+
+    # Ensure user exists
+    get_or_create_user(user_id, nickname="")
+
+    # Enforce phone binding for join
+    if must_bind_phone(user_id):
+        return jsonify({"ok": False, "message": "請先回到LINE對話綁定手機後再加入。"}), 200
+
+    ok, msg = join_request(int(req_id), user_id, party_size=party_size)
+    return jsonify({"ok": ok, "message": msg}), 200
+
+# ----------------------------
+# LINE webhook handler
+# ----------------------------
 @handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
+def on_text(event: MessageEvent):
     user_id = event.source.user_id
     text = (event.message.text or "").strip()
 
-    ensure_user(user_id)
+    # Ensure user exists and keep nickname from LINE profile if available
+    try:
+        profile = line_bot_api.get_profile(user_id)
+        nickname = profile.display_name or ""
+    except Exception:
+        nickname = ""
+    get_or_create_user(user_id, nickname=nickname)
 
-    # ID 回傳 userId
-    if text.upper() == "ID":
-        reply_text(event, f"你的 userId：\n{user_id}", quick_reply=qr_home(user_id))
-        return
+    # Read current state
+    state, data = get_state(user_id)
 
-    # 主選單
+    # ---------
+    # Global commands
+    # ---------
     if text == "主選單":
-        reply_text(event, "請選擇功能：", quick_reply=qr_main(user_id))
+        clear_state(user_id)
+        show_main_menu(event.reply_token, user_id)
         return
 
-    # 讓一進來打任何字，也能看到主選單按鍵
-    if text in ("選單", "menu", "開始"):
-        reply_text(event, "請選擇功能：", quick_reply=qr_main(user_id))
-        return
-
-    # ====== State handling ======
-    st = user_state.get(user_id, None)
-    if st:
-        mode = st.get("mode")
-        data = st.get("data", {})
-
-        # 綁定暱稱
-        if mode == "WAIT_NICK":
-            if len(text) < 1 or len(text) > 20:
-                reply_text(event, "暱稱長度請在 1~20 字。", quick_reply=qr_home(user_id))
-                return
-            set_nickname(user_id, text)
-            user_state.pop(user_id, None)
-            reply_text(event, f"✅ 暱稱設定完成：{text}", quick_reply=qr_home(user_id))
+    # ---------
+    # Forced phone binding (global gate)
+    # Allow only binding-related states/actions if phone missing
+    # ---------
+    if must_bind_phone(user_id):
+        # If user is not in binding state, start binding
+        if state not in ("BIND_PHONE",):
+            start_bind_phone(event.reply_token, user_id)
             return
 
-        # 綁定手機
-        if mode == "WAIT_PHONE":
-            phone = text.replace(" ", "")
-            if not re.fullmatch(r"09\d{8}", phone):
-                reply_text(event, "手機格式錯誤，請輸入 09xxxxxxxx（共10碼）。", quick_reply=qr_home(user_id))
-                return
-            set_phone(user_id, phone)
-            user_state.pop(user_id, None)
-            reply_text(event, f"✅ 綁定完成：{phone}", quick_reply=qr_home(user_id))
-            return
-
-        # 開桌流程
-        if mode == "OPEN_HAND":
-            if text not in ("快手", "慢手", "不限"):
-                reply_text(event, "請選擇：快手 / 慢手 / 不限", quick_reply=qr_open_hand())
-                return
-            data["hand"] = text
-            user_state[user_id] = {"mode": "OPEN_PEOPLE", "data": data}
-            reply_text(event, "請選擇人數桌（2/3/4）：", quick_reply=qr_people_need())
-            return
-
-        if mode == "OPEN_PEOPLE":
-            if text not in ("2", "3", "4"):
-                reply_text(event, "請選擇 2 / 3 / 4", quick_reply=qr_people_need())
-                return
-            data["people_need"] = int(text)
-            user_state[user_id] = {"mode": "OPEN_AMOUNT", "data": data}
-            reply_text(event, "請輸入金額（例如：200/50 或 300）：", quick_reply=qr_home(user_id))
-            return
-
-        if mode == "OPEN_AMOUNT":
-            if len(text) > 40:
-                reply_text(event, "金額太長，請重新輸入。", quick_reply=qr_home(user_id))
-                return
-            data["amount"] = text
-            user_state[user_id] = {"mode": "OPEN_TIME_TYPE", "data": data}
-            reply_text(event, "請選擇時間/需求：", quick_reply=qr_time_type())
-            return
-
-        if mode == "OPEN_TIME_TYPE":
-            if text == "現在":
-                data["time_type"] = "現在"
-                data["reserve_slot"] = ""
-                data["reserve_time"] = ""
-                user_state[user_id] = {"mode": "OPEN_NOTE", "data": data}
-                reply_text(event, "（可選）其他補充備註，沒有就輸入「無」：", quick_reply=qr_home(user_id))
-                return
-            if text == "預約時間":
-                data["time_type"] = "預約"
-                user_state[user_id] = {"mode": "OPEN_RESERVE_SLOT", "data": data}
-                reply_text(event, "請先選：早上/下午/晚上/半夜", quick_reply=qr_reserve_slot())
-                return
-            if text == "其他補充":
-                data["time_type"] = "其他"
-                user_state[user_id] = {"mode": "OPEN_NOTE", "data": data}
-                reply_text(event, "請輸入備註內容：", quick_reply=qr_home(user_id))
-                return
-            reply_text(event, "請選擇：現在 / 預約時間 / 其他補充", quick_reply=qr_time_type())
-            return
-
-        if mode == "OPEN_RESERVE_SLOT":
-            if text not in ("早上", "下午", "晚上", "半夜"):
-                reply_text(event, "請選：早上/下午/晚上/半夜", quick_reply=qr_reserve_slot())
-                return
-            data["reserve_slot"] = text
-            user_state[user_id] = {"mode": "OPEN_RESERVE_TIME", "data": data}
-            reply_text(event, "請輸入時間（例如 19:00，24小時制）：", quick_reply=qr_home(user_id))
-            return
-
-        if mode == "OPEN_RESERVE_TIME":
-            if not re.fullmatch(r"([01]\d|2[0-3]):[0-5]\d", text):
-                reply_text(event, "時間格式錯誤，請輸入例如 19:00", quick_reply=qr_home(user_id))
-                return
-            data["reserve_time"] = text
-            user_state[user_id] = {"mode": "OPEN_NOTE", "data": data}
-            reply_text(event, "（可選）其他補充備註，沒有就輸入「無」：", quick_reply=qr_home(user_id))
-            return
-
-        if mode == "OPEN_NOTE":
-            note = "" if text == "無" else text
-            data["note"] = note
-            # create table
-            ok, msg = can_play(user_id)
-            if not ok:
-                user_state.pop(user_id, None)
-                reply_text(event, msg, quick_reply=qr_home(user_id))
-                return
-            tid = create_table(
-                user_id=user_id,
-                people_need=int(data.get("people_need", 4)),
-                amount=data.get("amount", ""),
-                hand=data.get("hand", "不限"),
-                time_type=data.get("time_type", "現在"),
-                slot=data.get("reserve_slot", ""),
-                rtime=data.get("reserve_time", ""),
-                note=data.get("note", "")
+        # Handle phone input
+        if PHONE_RE.match(text):
+            set_user_phone(user_id, text)
+            clear_state(user_id)
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="✅ 綁定完成", quick_reply=main_menu_qr(user_id))
             )
-            user_state.pop(user_id, None)
-            reply_text(event, f"✅ 開桌成功！\n桌號：{tid}\n你已自動加入這桌。", quick_reply=qr_home(user_id))
             return
-
-        # 店家設定（貼連結）
-        if mode == "WAIT_GROUP_LINK":
-            update_shop_field("group_link", text.strip())
-            user_state.pop(user_id, None)
-            reply_text(event, "✅ 群設定完成", quick_reply=qr_home(user_id))
-            return
-
-        if mode == "WAIT_MAP_LINK":
-            update_shop_field("map_link", text.strip())
-            user_state.pop(user_id, None)
-            reply_text(event, "✅ 地圖設定完成", quick_reply=qr_home(user_id))
-            return
-
-        if mode == "WAIT_SHOP_LINE_LINK":
-            update_shop_field("shop_line_link", text.strip())
-            user_state.pop(user_id, None)
-            reply_text(event, "✅ 店家LINE設定完成", quick_reply=qr_home(user_id))
-            return
-
-        # 客戶查詢
-        if mode == "WAIT_CUSTOMER_SEARCH":
-            row = find_user_by_nick_or_last3(text)
-            if not row:
-                reply_text(event, "找不到此客戶，請輸入「暱稱」或「手機末三碼」。", quick_reply=qr_home(user_id))
-                return
-            target_id = row["user_id"]
-            user_state[user_id] = {"mode": "CUSTOMER_SELECTED", "data": {"target": target_id}}
-            frozen_txt = "是" if int(row["frozen"]) == 1 else "否"
-            reply_text(
-                event,
-                f"找到客戶：\n暱稱：{row['nickname'] or '未設定'}\n手機：{row['phone'] or '未綁定'}\n信用分：{row['credit']}\n凍結：{frozen_txt}\n\n請選擇要進行的動作：",
-                quick_reply=qr_credit_deduct()
+        else:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="⚠️ 手機格式不正確，請輸入 09xxxxxxxx：")
             )
             return
 
-        # 管理員加入（輸入6位碼）
-        if mode == "WAIT_ADMIN_CODE":
-            code = get_invite_code()
-            if text.strip() != code or not re.fullmatch(r"\d{6}", text.strip()):
-                reply_text(event, "驗證碼錯誤，請重新輸入6位數驗證碼。", quick_reply=qr_home(user_id))
-                return
-            add_admin(user_id)
-            user_state.pop(user_id, None)
-            reply_text(event, "✅ 已加入管理員。", quick_reply=qr_home(user_id))
+    # ---------
+    # State machine handlers (after phone is bound)
+    # ---------
+    if state == "EDIT_NICKNAME":
+        if len(text) < 1 or len(text) > 20:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="暱稱長度需 1~20 字，請重新輸入：", quick_reply=my_qr()))
             return
-
-    # ====== Commands ======
-    # 聯絡店家
-    if text == "聯絡店家":
-        reply_text(event, "☎️ 請選擇：", quick_reply=qr_contact())
+        set_user_nickname(user_id, text)
+        clear_state(user_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 暱稱更新完成", quick_reply=my_qr()))
         return
 
-    if text == "店家LINE":
-        shop = get_shop()
-        link = (shop["shop_line_link"] or "").strip() if shop else ""
-        if link:
-            qr = QuickReply(items=[
-                QuickReplyButton(action=URIAction(label="開啟店家LINE", uri=link)),
-                QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-            ])
-            reply_text(event, "📲 店家LINE：", quick_reply=qr)
-        else:
-            reply_text(event, "⚠️ 店家LINE尚未設定（請店家到『店家後台 → 店家LINE設定』貼連結）。", quick_reply=qr_home(user_id))
-        return
-
-    if text == "地圖":
-        shop = get_shop()
-        link = (shop["map_link"] or "").strip() if shop else ""
-        if link:
-            qr = QuickReply(items=[
-                QuickReplyButton(action=URIAction(label="開啟地圖", uri=link)),
-                QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-            ])
-            reply_text(event, "🗺 店家地圖：", quick_reply=qr)
-        else:
-            reply_text(event, "⚠️ 地圖尚未設定（請店家到『店家後台 → 地圖設定』貼連結）。", quick_reply=qr_home(user_id))
-        return
-
-    # 我的
-    if text == "我的":
-        p = get_user_profile(user_id)
-        nick = (p["nickname"] or "").strip() if p else ""
-        phone = (p["phone"] or "").strip() if p else ""
-        credit = int(p["credit"]) if p else 0
-        frozen = int(p["frozen"]) if p else 0
-        status = current_table_status(user_id)
-
-        frozen_txt = "（已凍結）" if frozen == 1 else ""
-        msg = (
-            f"👤 我的資料{frozen_txt}\n"
-            f"暱稱：{nick or '未設定'}\n"
-            f"手機號碼：{phone or '未綁定'}\n"
-            f"配桌狀態：{status}\n"
-            f"信用分數：{credit}\n\n"
-            f"功能：設定暱稱 / 綁定手機"
-        )
-        qr = QuickReply(items=[
-            QuickReplyButton(action=MessageAction(label="設定暱稱", text="設定暱稱")),
-            QuickReplyButton(action=MessageAction(label="綁定手機", text="綁定手機")),
-            QuickReplyButton(action=MessageAction(label="🏠 主選單", text="主選單")),
-        ])
-        reply_text(event, msg, quick_reply=qr)
-        return
-
-    if text == "設定暱稱":
-        user_state[user_id] = {"mode": "WAIT_NICK", "data": {}}
-        reply_text(event, "請輸入暱稱（1~20字）：", quick_reply=qr_home(user_id))
-        return
-
-    if text == "綁定手機":
-        user_state[user_id] = {"mode": "WAIT_PHONE", "data": {}}
-        reply_text(event, "請輸入手機號碼（09xxxxxxxx）：", quick_reply=qr_home(user_id))
-        return
-
-    # 開桌/配桌
-    if text == "開桌/配桌":
-        ok, msg = can_play(user_id)
-        if not ok:
-            reply_text(event, msg, quick_reply=qr_home(user_id))
+    if state == "EDIT_PHONE":
+        if PHONE_RE.match(text):
+            set_user_phone(user_id, text)
+            clear_state(user_id)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 手機更新完成", quick_reply=my_qr()))
             return
-        user_state[user_id] = {"mode": "OPEN_HAND", "data": {}}
-        reply_text(event, "請選擇：快手 / 慢手 / 不限", quick_reply=qr_open_hand())
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", quick_reply=my_qr()))
         return
 
-    # 桌況查詢
+    if state == "FLOW_SPEED":
+        if text not in MATCH_SPEEDS:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇節奏。", quick_reply=speed_qr()))
+            return
+        data["speed"] = text
+        ask_party(event.reply_token, user_id, data)
+        return
+
+    if state == "FLOW_PARTY":
+        if text not in MATCH_PARTY_SIZES:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇人數。", quick_reply=party_qr()))
+            return
+        data["party_size"] = int(text.replace("我", "").replace("人", "").strip())
+        ask_amount(event.reply_token, user_id, data)
+        return
+
+    if state == "FLOW_AMOUNT":
+        if text not in MATCH_AMOUNTS:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇金額。", quick_reply=amount_qr()))
+            return
+        data["amount"] = text
+        ask_rounds(event.reply_token, user_id, data)
+        return
+
+    if state == "FLOW_ROUNDS":
+        if text not in MATCH_ROUNDS:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請用按鍵選擇將數。", quick_reply=rounds_qr()))
+            return
+        data["rounds"] = text
+        ask_remark(event.reply_token, user_id, data)
+        return
+
+    if state == "FLOW_REMARK":
+        if text == "略過":
+            finalize_request(event.reply_token, user_id, data, remark="")
+            return
+        # Any text is remark
+        finalize_request(event.reply_token, user_id, data, remark=text)
+        return
+
+    if state == "SET_SHOP_LINK":
+        if not is_shop_admin(user_id):
+            clear_state(user_id)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+            return
+        field = (data.get("field") or "").strip()
+        label = (data.get("label") or "").strip()
+        # basic url check
+        if not (text.startswith("http://") or text.startswith("https://")):
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"⚠️ 請貼上有效連結（需 http/https）：", quick_reply=shop_backend_qr()))
+            return
+        update_shop_field(field, text)
+        clear_state(user_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"✅ {label} 設定完成", quick_reply=shop_backend_qr()))
+        return
+
+    if state == "REDEEM_ADMIN_CODE":
+        if not text.isdigit() or len(text) != 6:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入 6 位數驗證碼：", quick_reply=sub_menu_qr()))
+            return
+        ok, msg = redeem_invite_code(text, user_id)
+        clear_state(user_id)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg, quick_reply=main_menu_qr(user_id)))
+        return
+
+    if state == "REMOVE_ADMIN":
+        if not is_shop_admin(user_id):
+            clear_state(user_id)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="您不是店家管理員。", quick_reply=sub_menu_qr()))
+            return
+        target_id = text.strip()
+        if not target_id:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請貼上要移除的 userId：", quick_reply=shop_backend_qr()))
+            return
+        removed = remove_shop_admin(target_id)
+        clear_state(user_id)
+        if removed:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="✅ 已移除管理員（若存在）", quick_reply=shop_backend_qr()))
+        else:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="移除失敗。", quick_reply=shop_backend_qr()))
+        return
+
+    # ---------
+    # Normal menu routing (no active state)
+    # ---------
+    if text == "開桌":
+        start_flow(event.reply_token, user_id, req_type="open")
+        return
+
+    if text == "配桌":
+        start_flow(event.reply_token, user_id, req_type="match")
+        return
+
     if text == "桌況查詢":
-        reply_text(event, "📊 桌況查詢：", quick_reply=qr_table_status())
+        handle_table_query(event.reply_token)
         return
 
-    if text.startswith("桌況"):
-        parts = text.split()
-        missing = None
-        if len(parts) >= 2 and parts[1].startswith("缺"):
-            try:
-                missing = int(parts[1].replace("缺", ""))
-            except:
-                missing = None
-
-        if len(parts) >= 2 and parts[1] == "全部":
-            missing = None
-
-        lines = list_tables(missing=missing)
-        if not lines:
-            reply_text(event, "目前沒有符合條件的桌。", quick_reply=qr_home(user_id))
-            return
-        msg = "📊 目前桌況：\n\n" + "\n\n".join(lines)
-        reply_text(event, msg, quick_reply=qr_home(user_id))
-        return
-
-    # ===== 店家/管理員 =====
-    if text == "店家後台":
-        # 第一次進入店家後台：若沒有 owner，直接把此人設為 owner + admin
-        set_owner_if_empty(user_id)
-        if not is_admin(user_id):
-            add_admin(user_id)
-        reply_text(event, "🏪 店家後台：", quick_reply=qr_shop_admin())
-        return
-
-    if text == "群設定":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        user_state[user_id] = {"mode": "WAIT_GROUP_LINK", "data": {}}
-        reply_text(event, "請貼上群組邀請連結：", quick_reply=qr_home(user_id))
-        return
-
-    if text == "地圖設定":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        user_state[user_id] = {"mode": "WAIT_MAP_LINK", "data": {}}
-        reply_text(event, "請貼上 Google Maps 連結：", quick_reply=qr_home(user_id))
-        return
-
-    if text == "店家LINE設定":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        user_state[user_id] = {"mode": "WAIT_SHOP_LINE_LINK", "data": {}}
-        reply_text(event, "請貼上店家LINE連結（建議 https://line.me/R/ti/p/@xxxx）：", quick_reply=qr_home(user_id))
-        return
-
-    if text == "營業/休息":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        shop = get_shop()
-        cur = int(shop["is_open"]) if shop else 1
-        newv = 0 if cur == 1 else 1
-        update_shop_field("is_open", str(newv))
-        reply_text(event, f"✅ 已切換為：{'營業中' if newv==1 else '休息中'}", quick_reply=qr_home(user_id))
-        return
-
-    if text == "產生管理員碼":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        # 只有 owner 可產生（避免亂發）
-        if get_owner_id() != user_id:
-            reply_text(event, "只有 owner 可以產生管理員驗證碼。", quick_reply=qr_home(user_id))
-            return
-        code = f"{random.randint(0, 999999):06d}"
-        set_invite_code(code)
-        reply_text(event, f"✅ 管理員驗證碼：{code}\n（請新管理員輸入 6 位數驗證碼加入）", quick_reply=qr_home(user_id))
-        return
-
-    # 新管理員輸入 6 位碼加入
-    if re.fullmatch(r"\d{6}", text):
-        code = get_invite_code()
-        if code and text == code:
-            add_admin(user_id)
-            reply_text(event, "✅ 已加入管理員。", quick_reply=qr_home(user_id))
+    if text in ("缺1", "缺2", "缺3"):
+        need = int(text.replace("缺", "").strip())
+        flex = flex_table_list(need)
+        if flex is None:
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"目前沒有缺{need}的桌。", quick_reply=sub_menu_qr()))
         else:
-            reply_text(event, "驗證碼錯誤。", quick_reply=qr_home(user_id))
+            line_bot_api.reply_message(event.reply_token, flex)
+        return
+
+    if text == "我的":
+        handle_my(event.reply_token, user_id)
+        return
+
+    if text == "修改暱稱":
+        upsert_state(user_id, "EDIT_NICKNAME", {})
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入新的暱稱（1~20字）：", quick_reply=my_qr()))
+        return
+
+    if text == "修改手機":
+        upsert_state(user_id, "EDIT_PHONE", {})
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入新的手機號（09xxxxxxxx）：", quick_reply=my_qr()))
+        return
+
+    if text == "查信用分":
+        handle_credit(event.reply_token, user_id)
+        return
+
+    if text == "聯絡店家":
+        handle_contact(event.reply_token)
+        return
+
+    # Shop backend
+    if text == "店家後台":
+        handle_shop_backend(event.reply_token, user_id)
         return
 
     if text == "客戶資訊":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        user_state[user_id] = {"mode": "WAIT_CUSTOMER_SEARCH", "data": {}}
-        reply_text(event, "請輸入客戶「暱稱」或「手機末三碼」查詢：", quick_reply=qr_home(user_id))
+        handle_customer_info(event.reply_token, user_id)
         return
 
-    # 扣分 / 凍結切換（需先選到客戶）
-    if text.startswith("扣分") or text == "凍結切換":
-        if not is_admin(user_id):
-            reply_text(event, "你沒有店家權限。", quick_reply=qr_home(user_id))
-            return
-        st = user_state.get(user_id, {})
-        if st.get("mode") != "CUSTOMER_SELECTED":
-            reply_text(event, "請先到「客戶資訊」查詢並選定客戶。", quick_reply=qr_home(user_id))
-            return
-        target = st.get("data", {}).get("target", "")
-        if not target:
-            reply_text(event, "目標客戶不存在，請重新查詢。", quick_reply=qr_home(user_id))
-            return
-
-        if text == "凍結切換":
-            frozen = user_is_frozen(target)
-            set_frozen(target, 0 if frozen else 1)
-            p = get_user_profile(target)
-            reply_text(event, f"✅ 已{'解除凍結' if frozen else '凍結'}此客戶。\n目前信用分：{p['credit']}", quick_reply=qr_credit_deduct())
-            return
-
-        # 扣分原因
-        reason = text.replace("扣分", "").strip()
-        mapping = {
-            "放鳥": -20,
-            "取消": -5,
-            "遲到": -10,
-            "玩家檢舉": -15
-        }
-        if reason not in mapping:
-            reply_text(event, "扣分原因不正確。", quick_reply=qr_credit_deduct())
-            return
-        new_credit = deduct_credit(target, mapping[reason])
-        p = get_user_profile(target)
-        frozen_txt = "（已凍結）" if int(p["frozen"]) == 1 else ""
-        reply_text(
-            event,
-            f"✅ 已扣分：{reason} {mapping[reason]}\n目前信用分：{new_credit}{frozen_txt}",
-            quick_reply=qr_credit_deduct()
-        )
+    if text == "群設定":
+        prompt_set_link(event.reply_token, user_id, field="group_link", label="群連結")
         return
 
-    # ===== Default: 回主選單（不丟返回） =====
-    reply_text(event, "請選擇功能：", quick_reply=qr_main(user_id))
+    if text == "地圖設定":
+        prompt_set_link(event.reply_token, user_id, field="map_link", label="地圖")
+        return
 
+    if text == "店家LINE設定":
+        prompt_set_link(event.reply_token, user_id, field="shop_line_link", label="店家LINE")
+        return
+
+    if text == "營業/休息":
+        toggle_open(event.reply_token, user_id)
+        return
+
+    if text == "新增管理員":
+        generate_admin_code(event.reply_token, user_id)
+        return
+
+    if text == "管理員名單":
+        handle_admin_list(event.reply_token, user_id)
+        return
+
+    if text == "移除管理員":
+        prompt_remove_admin(event.reply_token, user_id)
+        return
+
+    # Redeem code shortcut (anyone can type "輸入6位碼" to redeem)
+    if text == "輸入6位碼":
+        upsert_state(user_id, "REDEEM_ADMIN_CODE", {})
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text="請輸入 6 位數驗證碼：", quick_reply=sub_menu_qr()))
+        return
+
+    # Default fallback: show main menu
+    show_main_menu(event.reply_token, user_id)
+
+# ----------------------------
+# Boot
+# ----------------------------
+init_db()
 
 if __name__ == "__main__":
-    # Render / production 會用 gunicorn 啟動，這段只給本機測試用
+    # Local run
     port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port, debug=False)
+    app.run(host="0.0.0.0", port=port)
