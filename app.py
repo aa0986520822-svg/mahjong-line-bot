@@ -324,12 +324,15 @@ def ss_clear(db, user_id):
 
 # ====== 共用 QuickReply（每個選單都要有：返回 / 回主選單） ======
 def make_qr(items=None, include_back=True, include_home=True):
-    items = list(items) if items else []
-    if include_back and not any(getattr(getattr(i, "action", None), "text", None) == "返回" for i in items):
-        items.append(QuickReplyButton(action=MessageAction(label="↩ 返回", text="返回")))
-    if include_home and not any(getattr(getattr(i, "action", None), "text", None) == "選單" for i in items):
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
-    return make_qr(items)
+    """Build LINE QuickReply with optional Back/Home buttons.
+    items: list[QuickReplyButton]
+    """
+    buttons = list(items) if items else []
+    if include_back and not any(getattr(getattr(b, "action", None), "text", None) == "返回" for b in buttons):
+        buttons.append(QuickReplyButton(action=MessageAction(label="↩ 返回", text="返回")))
+    if include_home and not any(getattr(getattr(b, "action", None), "text", None) == "選單" for b in buttons):
+        buttons.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
+    return QuickReply(items=buttons)
 
 def back_menu():
     return make_qr([])
@@ -2309,7 +2312,3 @@ h1{{font-size:18px; margin:0 0 12px;}}
 
 # ---- Render 啟動 ----
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    with app.app_context():
-        init_db()
-    app.run(host="0.0.0.0", port=port)
