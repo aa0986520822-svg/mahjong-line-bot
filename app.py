@@ -323,13 +323,12 @@ def ss_clear(db, user_id):
 
 
 # ====== 共用 QuickReply（每個選單都要有：返回 / 回主選單） ======
-def make_qr(items=None, include_back=True, include_home=True):
-    """Build LINE QuickReply with optional Back/Home buttons.
+def make_qr(items=None, include_home=True):
+    """Build LINE QuickReply.
     items: list[QuickReplyButton]
+    Always includes 回主選單（不提供返回按鍵）
     """
     buttons = list(items) if items else []
-    if include_back and not any(getattr(getattr(b, "action", None), "text", None) == "返回" for b in buttons):
-        buttons.append(QuickReplyButton(action=MessageAction(label="↩ 返回", text="返回")))
     if include_home and not any(getattr(getattr(b, "action", None), "text", None) == "選單" for b in buttons):
         buttons.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
     return QuickReply(items=buttons)
@@ -973,58 +972,6 @@ def handle_message(event):
 
 
     # ===== 返回（上一層）=====
-    if text == "返回":
-        mode = user_state.get(user_id, {}).get("mode")
-        # 常用返回路徑（不足時退回主選單）
-        if mode in ("set_group",):
-            # 回到店家合作頁（若有店家）
-            row = db.execute("SELECT shop_id, name, approved, open FROM shops WHERE owner_id=? ORDER BY rowid DESC", (user_id,)).fetchone()
-            if row and int(row["approved"] or 0) == 1:
-                status = "🟢 營業中" if int(row["open"] or 0) == 1 else "🔴 未營業"
-                line_bot_api.reply_message(event.reply_token, TextSendMessage(
-                    f"🏪 {row['name']}\n{status}",
-                    quick_reply=make_qr([
-                        QuickReplyButton(action=MessageAction(label="🟢 開始營業", text="開始營業")),
-                        QuickReplyButton(action=MessageAction(label="🔴 今日休息", text="今日休息")),
-                        QuickReplyButton(action=MessageAction(label="🔗 設定群組", text="設定群組")),
-                    ])
-                ))
-                return
-        # 配桌流程返回
-        if mode in ("wait_amount",):
-            # 回到選店家
-            ss_clear(db, user_id)
-            shops = db.execute("SELECT shop_id, name FROM shops WHERE open=1 AND approved=1 ORDER BY rowid DESC").fetchall()
-            if not shops:
-                line_bot_api.reply_message(event.reply_token, TextSendMessage("目前沒有營業店家", quick_reply=back_menu()))
-                return
-            items = [QuickReplyButton(action=PostbackAction(label=(s["name"] or "")[:20], data=f"shop={s['shop_id']}")) for s in shops]
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇店家", quick_reply=make_qr(items)))
-            return
-        if mode in ("wait_people",):
-            # 回到選金額（讀 session_state）
-            sid, _amt, _hand, _act = ss_get(db, user_id)
-            if not sid:
-                line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-                return
-            items = [
-                QuickReplyButton(action=MessageAction(label="50/20", text="金額:50/20")),
-                QuickReplyButton(action=MessageAction(label="100/20", text="金額:100/20")),
-                QuickReplyButton(action=MessageAction(label="100/50", text="金額:100/50")),
-                QuickReplyButton(action=MessageAction(label="200/50", text="金額:200/50")),
-            ]
-            user_state[user_id] = {"mode": "wait_amount", "shop_id": sid}
-            line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇金額", quick_reply=make_qr(items)))
-            return
-
-        # 預設：回主選單
-        user_state.pop(user_id, None)
-        ss_clear(db, user_id)
-        line_bot_api.reply_message(event.reply_token, main_menu(user_id))
-        return
-
-    # ===== 綁定手機流程 =====
-    if user_state.get(user_id, {}).get("mode") == "bind_phone":
         phone = normalize_phone(text)
         if not phone:
             line_bot_api.reply_message(event.reply_token, TextSendMessage("格式不正確，請輸入手機號碼（例：09xxxxxxxx）", quick_reply=back_menu()))
@@ -1180,7 +1127,7 @@ def handle_message(event):
             return
         items = [QuickReplyButton(action=PostbackAction(label=(s["name"] or "")[:20], data=f"shop={s['shop_id']}")) for s in shops]
         items.append(QuickReplyButton(action=MessageAction(label="🔙 回主選單", text="選單")))
-        line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇店家", quick_reply=make_qr(items, include_back=True, include_home=True)))
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("請選擇店家", quick_reply=make_qr(items)))
         return
 
     if text == "桌況查詢":
@@ -1366,7 +1313,6 @@ def handle_message(event):
         ]
         freeze_btn = QuickReplyButton(action=MessageAction(label="凍結", text="凍結此人")) if not frozen else QuickReplyButton(action=MessageAction(label="解除凍結", text="解除凍結此人"))
         items.append(freeze_btn)
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 返回", text="返回")))
         items.append(QuickReplyButton(action=MessageAction(label="🏠 回主選單", text="選單")))
         line_bot_api.reply_message(event.reply_token, TextSendMessage(
             f"👤 客戶：{nk}\n手機：***{last3}\n信用分：{score}\n狀態：{status}\n\n（點原因即可扣分；低於 60 會自動凍結）",
@@ -1612,7 +1558,6 @@ def handle_message(event):
             lines.append(f"- {nk}｜{tag}｜{uid}")
             if rrole != "owner":
                 items.append(QuickReplyButton(action=MessageAction(label=f"刪除 {nk}", text=f"刪除管理員:{uid}")))
-        items.append(QuickReplyButton(action=MessageAction(label="🔙 返回", text="返回")))
         items.append(QuickReplyButton(action=MessageAction(label="🏠 回主選單", text="選單")))
         line_bot_api.reply_message(event.reply_token, TextSendMessage("\n".join(lines), quick_reply=make_qr(items)))
         return
@@ -1881,6 +1826,24 @@ def handle_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已設定群組連結", quick_reply=back_menu()))
         return
 
+    if text == "設定地圖":
+        user_state[user_id] = {"mode": "set_map"}
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("請貼上地圖連結（Google Maps 連結）", quick_reply=back_menu()))
+        return
+
+    if user_state.get(user_id, {}).get("mode") == "set_map":
+        link = text.strip()
+        row = db.execute("SELECT shop_id FROM shops WHERE owner_id=? ORDER BY rowid DESC", (user_id,)).fetchone()
+        if not row:
+            user_state.pop(user_id, None)
+            line_bot_api.reply_message(event.reply_token, TextSendMessage("你尚未綁定店家", quick_reply=back_menu()))
+            return
+        db.execute("UPDATE shops SET partner_map=? WHERE shop_id=?", (link, row["shop_id"]))
+        db.commit()
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已設定地圖連結", quick_reply=back_menu()))
+        return
+
     # ===== 店家地圖 =====
     if text == "店家地圖":
         rows = db.execute("SELECT shop_id, name, partner_map FROM shops WHERE open=1 AND approved=1 ORDER BY rowid DESC").fetchall()
@@ -2056,7 +2019,6 @@ def handle_message(event):
                     QuickReplyButton(action=MessageAction(label="🟢 現在", text="時間:現在")),
                     QuickReplyButton(action=MessageAction(label="🕒 預約時間", text="時間:預約")),
                     QuickReplyButton(action=MessageAction(label="📝 其他補充", text="時間:其他補充")),
-                    QuickReplyButton(action=MessageAction(label="🔙 返回", text="返回")),
                     QuickReplyButton(action=MessageAction(label="🏠 回主選單", text="選單")),
                 ])
             ))
@@ -2115,7 +2077,6 @@ def handle_message(event):
                     QuickReplyButton(action=MessageAction(label="下午", text="時段:下午")),
                     QuickReplyButton(action=MessageAction(label="晚上", text="時段:晚上")),
                     QuickReplyButton(action=MessageAction(label="半夜", text="時段:半夜")),
-                    QuickReplyButton(action=MessageAction(label="🔙 返回", text="返回")),
                     QuickReplyButton(action=MessageAction(label="🏠 回主選單", text="選單")),
                 ])
             ))
@@ -2317,7 +2278,3 @@ h1{{font-size:18px; margin:0 0 12px;}}
 
 # ---- Render 啟動 ----
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    with app.app_context():
-        init_db()
-    app.run(host="0.0.0.0", port=port)
