@@ -1,6 +1,6 @@
 import os, sqlite3, threading, time, re, random
 from datetime import datetime, timedelta
-from flask import Flask, request, abort, g
+from flask import Flask, request, abort, g, has_request_context
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
@@ -13,6 +13,7 @@ app = Flask(__name__)
 
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
+LIFF_ID = os.getenv("LIFF_ID", "").strip()
 
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
     # 讓 Render log 更好讀（仍會啟動，但 LineBotApi 會在呼叫時失敗）
@@ -554,15 +555,36 @@ def build_schedule_text(sched_type, sched_period, sched_time):
     return ""
 
 def public_base_url():
-    return os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    """Base URL used to build external links.
+    - Prefer PUBLIC_BASE_URL env var (for custom domains)
+    - Fallback to current request host (works on Render without extra settings)
+    """
+    env = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if env:
+        return env
+    if has_request_context():
+        # request.url_root includes trailing slash
+        return request.url_root.rstrip("/")
+    return ""
 
 def liff_status_url(missing=None):
+    """HTTP URL to LIFF status page (works in any browser)."""
     base = public_base_url()
     if not base:
         return None
     if missing is None:
         return f"{base}/liff/status"
     return f"{base}/liff/status?missing={missing}"
+
+def liff_deeplink(missing=None):
+    """Prefer opening inside LINE via LIFF deep link when LIFF_ID is set.
+    Falls back to the normal https URL if LIFF_ID isn't configured.
+    """
+    if LIFF_ID:
+        if missing is None:
+            return f"https://liff.line.me/{LIFF_ID}"
+        return f"https://liff.line.me/{LIFF_ID}?missing={missing}"
+    return liff_status_url(missing)
 
 def waiting_summary(db, missing_filter=None):
     """Summary of waiting pools. missing_filter: 1/2/3 or None for all."""
@@ -1162,7 +1184,7 @@ def handle_message(event):
 
     if text == "桌況查詢":
         msg = waiting_summary(db)
-        url = liff_status_url()
+        url = liff_deeplink()
         items = [
             QuickReplyButton(action=MessageAction(label="缺1", text="桌況:缺1")),
             QuickReplyButton(action=MessageAction(label="缺2", text="桌況:缺2")),
@@ -1926,7 +1948,7 @@ def handle_message(event):
         except:
             missing = None
         msg = waiting_summary(db, missing_filter=missing)
-        url = liff_status_url(missing=missing)
+        url = liff_deeplink(missing=missing)
         items = [
             QuickReplyButton(action=MessageAction(label="全部", text="桌況查詢")),
             QuickReplyButton(action=MessageAction(label="缺1", text="桌況:缺1")),
@@ -2186,3 +2208,108 @@ def handle_message(event):
         stats = db.execute("""
             SELECT
               COALESCE(SUM(people),0) AS total_people,
+              COALESCE(SUM(CASE WHEN status='confirmed' THEN people ELSE 0 END),0) AS confirmed_people
+            FROM match_users
+            WHERE table_id=?
+        """, (table_id,)).fetchone()
+
+        if stats and int(stats["total_people"]) == 4 and int(stats["confirmed_people"]) == 4:
+            finalize_success(table_id)
+
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("✅ 已確認加入", quick_reply=back_menu()))
+        return
+
+    if text == "放棄":
+        # 放棄允許凍結者操作（只是退出）
+        handle_abandon(user_id)
+        user_state.pop(user_id, None)
+        line_bot_api.reply_message(event.reply_token, TextSendMessage("❌ 已放棄（等同取消配桌）", quick_reply=back_menu()))
+        return
+
+    # ===== 其他文字：回主選單 =====
+    line_bot_api.reply_message(event.reply_token, main_menu(user_id))
+
+
+
+@app.route("/liff/status", methods=["GET"])
+def liff_status():
+    init_db()
+    db = get_db()
+    missing = request.args.get("missing")
+    missing_filter = int(missing) if (missing and missing.isdigit()) else None
+
+    rows = db.execute("""
+         SELECT 
+            m.shop_id, s.name AS shop_name, m.amount, COALESCE(m.hand,'不限') AS hand,
+            COALESCE(SUM(m.people),0) AS total_people,
+            (SELECT note FROM match_users mm WHERE mm.shop_id=m.shop_id AND mm.amount=m.amount AND mm.status='waiting' AND mm.is_creator=1 ORDER BY rowid DESC LIMIT 1) AS note,
+            (SELECT sched_type FROM match_users mm WHERE mm.shop_id=m.shop_id AND mm.amount=m.amount AND mm.status='waiting' AND mm.is_creator=1 ORDER BY rowid DESC LIMIT 1) AS sched_type,
+            (SELECT sched_period FROM match_users mm WHERE mm.shop_id=m.shop_id AND mm.amount=m.amount AND mm.status='waiting' AND mm.is_creator=1 ORDER BY rowid DESC LIMIT 1) AS sched_period,
+            (SELECT sched_time FROM match_users mm WHERE mm.shop_id=m.shop_id AND mm.amount=m.amount AND mm.status='waiting' AND mm.is_creator=1 ORDER BY rowid DESC LIMIT 1) AS sched_time
+         FROM match_users m
+         LEFT JOIN shops s ON m.shop_id=s.shop_id
+         WHERE m.status='waiting'
+         GROUP BY m.shop_id, m.amount, COALESCE(m.hand,'不限')
+         ORDER BY total_people DESC
+    """).fetchall()
+
+    def esc(x):
+        return (x or "").replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
+
+    cards=[]
+    for r in rows:
+        total=int(r["total_people"] or 0)
+        if total<=0: 
+            continue
+        modv=total%4
+        miss=0 if modv==0 else 4-modv
+        if missing_filter is not None and miss!=missing_filter:
+            continue
+        shop=esc(r["shop_name"] or "店家")
+        amount=esc(r["amount"] or "")
+        hand=esc(r["hand"] or "不限")
+        tag="✅ 可成桌" if miss==0 else f"缺{miss}"
+        sched=esc(build_schedule_text(r["sched_type"], r["sched_period"], r["sched_time"]))
+        note=esc((r["note"] or "").strip())
+        extra=""
+        if sched:
+            extra += f"<span class='pill'>{sched}</span>"
+        if note:
+            extra += f"<span class='note'>備註：{note}</span>"
+        cards.append(f"""<div class='card'>
+  <div class='title'>🏪 {shop}</div>
+  <div class='meta'>💰 {amount}｜🀄 {hand}｜等待 {total} 人｜<b>{tag}</b></div>
+  <div class='extra'>{extra}</div>
+</div>""")
+    body="\n".join(cards) if cards else "<p class='empty'>目前沒有等待中的桌。</p>"
+    title = f"桌況查詢（缺{missing_filter}）" if missing_filter is not None else "桌況查詢"
+    return f"""<!doctype html>
+<html lang='zh-Hant'>
+<head>
+<meta charset='utf-8' />
+<meta name='viewport' content='width=device-width, initial-scale=1' />
+<title>{title}</title>
+<style>
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Noto Sans TC',Arial; margin:16px; background:#fafafa;}}
+h1{{font-size:18px; margin:0 0 12px;}}
+.card{{background:white; border:1px solid #eee; border-radius:12px; padding:12px; margin:10px 0; box-shadow:0 1px 2px rgba(0,0,0,.04);}}
+.title{{font-weight:700; margin-bottom:6px;}}
+.meta{{color:#333; font-size:14px; line-height:1.4;}}
+.extra{{margin-top:8px; font-size:13px; color:#555;}}
+.pill{{display:inline-block; padding:2px 8px; border-radius:999px; background:#f0f0ff; margin-right:6px;}}
+.note{{display:block; margin-top:6px;}}
+.empty{{color:#666;}}
+</style>
+</head>
+<body>
+<h1>{title}</h1>
+{body}
+</body>
+</html>"""
+
+# ---- Render 啟動 ----
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    with app.app_context():
+        init_db()
+    app.run(host="0.0.0.0", port=port)
