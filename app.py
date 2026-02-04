@@ -515,9 +515,7 @@ def main_menu(user_id=None):
         QuickReplyButton(action=MessageAction(label="🀄 開桌/配桌", text="開桌/配桌")),
         QuickReplyButton(action=MessageAction(label="📋 桌況查詢", text="桌況查詢")),
         QuickReplyButton(action=MessageAction(label="👤 我的", text="我的")),
-        QuickReplyButton(action=MessageAction(label="☎️ 店家聯絡", text="店家聯絡")),
-        QuickReplyButton(action=MessageAction(label="🗺 地圖", text="地圖")),
-    ]
+        QuickReplyButton(action=MessageAction(label="☎️ 店家聯絡", text="店家聯絡")),    ]
     try:
         db = get_db()
         if user_id and is_admin(db, user_id):
@@ -1231,9 +1229,16 @@ def handle_message(event):
 
     if text == "店家聯絡":
         # 單店版：取第一筆已審核店家資訊（或你可改成固定文字）
-        row = db.execute("SELECT name FROM shops WHERE approved=1 ORDER BY rowid DESC LIMIT 1").fetchone()
+        row = db.execute("SELECT name, partner_map FROM shops WHERE approved=1 ORDER BY rowid DESC LIMIT 1").fetchone()
         name = row["name"] if row else "店家"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(f"☎️ {name}\n\n如需預約/客服，請直接聯繫店家。", quick_reply=make_qr([])))
+        murl = (row["partner_map"] or "").strip() if row else ""
+
+        items = []
+        if murl:
+            items.append(QuickReplyButton(action=URIAction(label="🗺 地圖", uri=murl)))
+
+        msg = f"☎️ {name}\n\n如需預約/客服，請直接聯繫店家。\n\n🗺 地圖：請點下方按鈕開啟"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(msg, quick_reply=make_qr(items)))
         return
 
     if text == "地圖":
@@ -2312,3 +2317,7 @@ h1{{font-size:18px; margin:0 0 12px;}}
 
 # ---- Render 啟動 ----
 if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    with app.app_context():
+        init_db()
+    app.run(host="0.0.0.0", port=port)
