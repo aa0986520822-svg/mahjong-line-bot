@@ -1,3 +1,5 @@
-flask
+Flask
 line-bot-sdk
 pytz
+openpyxl
+gunicorn
