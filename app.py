@@ -43,8 +43,8 @@ from linebot.models import (
 # ----------------------------
 # Config
 # ----------------------------
-CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", os.getenv("CHANNEL_ACCESS_TOKEN", "")).strip()
-CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET", os.getenv("CHANNEL_SECRET", "")).strip()
+CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or os.getenv("CHANNEL_ACCESS_TOKEN", "")).strip()
+CHANNEL_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or os.getenv("CHANNEL_SECRET", "")).strip()
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
 LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
@@ -60,8 +60,15 @@ MATCH_AMOUNTS = ["50/20", "100/20", "100/50", "200/50"]
 MATCH_ROUNDS = ["2將", "3將"]
 
 # 開桌時間選項
-TIME_MODE_OPTIONS = ["現在", "預約", "主選單"]
-TIME_MODE_MAP = {"現在": "NOW", "預約": "RESERVE", "主選單": "MENU"}
+TIME_MODE_OPTIONS = ["現在", "早", "中", "晚", "半夜", "精確時間"]
+TIME_MODE_MAP = {
+    "現在": "NOW",
+    "早": "PERIOD",
+    "中": "PERIOD",
+    "晚": "PERIOD",
+    "半夜": "PERIOD",
+    "精確時間": "EXACT",
+}
 
 PHONE_RE = re.compile(r"^09\d{8}$")
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")  # HH:MM
@@ -87,6 +94,10 @@ AUTO_CONFIRM_TIMEOUT_REASON = "確認逾時未點選"
 app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+# ---- sanity check: avoid silent no-response when env vars missing ----
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    print("⚠️ [CONFIG] Missing LINE channel credentials. Check Render env vars: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET (or CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET).")
 
 # ----------------------------
 # Time helpers
@@ -578,7 +589,10 @@ def is_frozen(user_id: str) -> bool:
     return int(u["frozen"] or 0) == 1
 
 def reply_main(reply_token: str, user_id: str, text: str):
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=main_menu_qr(user_id)))
+    try:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=main_menu_qr(user_id)))
+    except Exception as e:
+        print("⚠️ [reply_main] reply error:", e)
 
 def ensure_shop_open_or_message(reply_token: str, user_id: str) -> bool:
     if shop_is_open():
@@ -932,9 +946,6 @@ def push_filled_info(req_id: int):
     room = (req["room_name"] or "").strip()
     room_line = f"🏷️ 房名：{room}\n" if room else ""
 
-    mode = (req["time_mode"] or "").strip()
-    arrival_line = "請於 20 分鐘內到店家" if mode == "NOW" else "請於成桌前 5 分鐘到店家"
-
     msg = (
         f"🎉 成桌成功\n"
         f"🏪 店家：{shop_name}\n"
@@ -945,7 +956,7 @@ def push_filled_info(req_id: int):
         f"⚡ 手速：{req['speed'] or '-'}\n"
         f"🀄 將數：{req['rounds'] or '-'}\n\n"
         f"🔗 群組連結：{group_link if group_link else '（尚未設定）'}\n\n"
-        f"⏱️ {arrival_line}\n"
+        f"⏱️ 請於 20 分鐘內到店家\n"
         f"💬 進群後 3 分鐘內回報桌號"
     )
     for p in participants:
@@ -1299,7 +1310,11 @@ def rounds_qr():
 def time_qr():
     return qr([
         MessageAction(label="現在", text="現在"),
-        MessageAction(label="預約", text="預約"),
+        MessageAction(label="早", text="早"),
+        MessageAction(label="中", text="中"),
+        MessageAction(label="晚", text="晚"),
+        MessageAction(label="半夜", text="半夜"),
+        MessageAction(label="精確時間", text="精確時間"),
         MessageAction(label="主選單", text="主選單"),
     ])
 
@@ -1316,19 +1331,27 @@ def my_qr():
         MessageAction(label="主選單", text="主選單"),
     ])
 
-def shop_backend_qr():
+
+def return_only_qr():
+    # 修改暱稱/手機時，底部只需要「返回」= 回主選單
     return qr([
+        MessageAction(label="返回", text="主選單"),
+    ])
+
+def shop_backend_qr():
+    # 只有 owner 可以「新增管理員(6位碼)」
+    actions = [
         MessageAction(label="店名設定", text="店名設定"),
         MessageAction(label="群設定", text="群設定"),
         MessageAction(label="地圖設定", text="地圖設定"),
         MessageAction(label="店家LINE設定", text="店家LINE設定"),
         MessageAction(label="營業/休息", text="營業/休息"),
         MessageAction(label="新增管理員(6位碼)", text="新增管理員"),
-        MessageAction(label="輸入6位碼", text="輸入6位碼"),
         MessageAction(label="管理員名單", text="管理員名單"),
         MessageAction(label="移除管理員", text="移除管理員"),
         MessageAction(label="主選單", text="主選單"),
-    ])
+    ]
+    return qr(actions)
 
 def customer_info_qr():
     return qr([
@@ -1341,7 +1364,6 @@ def deduction_qr():
     actions = []
     for name, delta in DEDUCTION_OPTIONS:
         actions.append(MessageAction(label=f"{name}{delta}", text=f"扣分 {name}"))
-    actions.append(MessageAction(label="返回客戶資訊", text="客戶資訊"))
     actions.append(MessageAction(label="主選單", text="主選單"))
     return qr(actions)
 
@@ -1353,20 +1375,31 @@ def active_block_qr():
     ])
 
 def reply_sub(reply_token: str, text: str):
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=sub_menu_qr()))
+    try:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=sub_menu_qr()))
+    except Exception as e:
+        print("⚠️ [reply_sub] reply error:", e)
 
 def reply_custom(reply_token: str, text: str, quick_reply_obj):
-    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
+    try:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
+    except Exception as e:
+        print("⚠️ [reply_custom] reply error:", e)
 
 # ✅ 移除 Flex 卡片：只回文字+按鍵
 def reply_menu(reply_token: str, user_id: str):
-    line_bot_api.reply_message(
-        reply_token,
-        TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
-    )
+    # ✅ 移除 Flex 卡片：只回文字+按鍵（並避免 reply_token 重複使用導致無回應）
+    try:
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
+        )
+    except Exception as e:
+        print("⚠️ [reply_menu] reply error:", e)
 
 # ----------------------------
 # Shop backend / customer info
+
 # ----------------------------
 def handle_shop_backend(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
@@ -1411,8 +1444,9 @@ def toggle_open(reply_token: str, user_id: str):
     reply_custom(reply_token, f"已切換為：{'營業' if new_status==1 else '休息'}", shop_backend_qr())
 
 def generate_admin_code(reply_token: str, user_id: str):
-    if not is_shop_admin(user_id):
-        reply_sub(reply_token, "您不是店家管理員。")
+    # 只有 OWNER_USER_ID（老闆綁定ID）才能產生驗證碼
+    if not is_owner(user_id):
+        reply_sub(reply_token, "只有老闆才能產生驗證碼。")
         return
     ok, msg = create_invite_code(user_id)
     reply_custom(reply_token, msg, shop_backend_qr())
@@ -1425,15 +1459,24 @@ def handle_admin_list(reply_token: str, user_id: str):
     if not ids:
         reply_custom(reply_token, "目前尚無管理員。", shop_backend_qr())
         return
-    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids]) + "\n\n（移除：點「移除管理員」後貼上 userId）"
+    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids])
     reply_custom(reply_token, msg, shop_backend_qr())
 
 def prompt_remove_admin(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
         reply_sub(reply_token, "您不是店家管理員。")
         return
-    upsert_state(user_id, "REMOVE_ADMIN", {})
-    reply_custom(reply_token, "請貼上要移除的管理員 userId：", shop_backend_qr())
+    ids = list_shop_admin_user_ids()
+    # 不允許移除 owner
+    ids = [x for x in ids if x != OWNER_USER_ID]
+    if not ids:
+        reply_custom(reply_token, "目前沒有可移除的管理員。", shop_backend_qr())
+        return
+    actions = []
+    for i, x in enumerate(ids[:ADMIN_MAX_COUNT], start=1):
+        actions.append(MessageAction(label=f"移除{i}", text=f"移除管理員 {x}"))
+    actions.append(MessageAction(label="主選單", text="主選單"))
+    reply_custom(reply_token, "請點選要移除的管理員：", qr(actions))
 
 def handle_customer_info(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
@@ -1933,7 +1976,11 @@ def api_giveup():
 # ----------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def on_text(event: MessageEvent):
-    process_expired_confirmations()
+    try:
+        process_expired_confirmations()
+    except Exception as e:
+        print("⚠️ [process_expired_confirmations] error:", e)
+
 
     user_id = event.source.user_id
     text = (event.message.text or "").strip()
@@ -1975,7 +2022,7 @@ def on_text(event: MessageEvent):
     # ---- state machine
     if state == "EDIT_NICKNAME":
         if len(text) < 1 or len(text) > 20:
-            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", my_qr())
+            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", return_only_qr())
             return
         set_user_nickname_manual(user_id, text)
         clear_state(user_id)
@@ -1988,7 +2035,7 @@ def on_text(event: MessageEvent):
             clear_state(user_id)
             reply_custom(event.reply_token, "✅ 手機更新完成", my_qr())
             return
-        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", my_qr())
+        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", return_only_qr())
         return
 
     if state == "SET_SHOP_NAME":
@@ -2070,37 +2117,22 @@ def on_text(event: MessageEvent):
             reply_custom(event.reply_token, "請用按鍵選擇時間。", time_qr())
             return
         mode = TIME_MODE_MAP.get(text, "")
-        if mode == "MENU":
-            clear_state(user_id)
-            reply_main(event.reply_token, user_id, "已回主選單。")
-            return
         data["time_mode"] = mode
         data["time_period"] = ""
         data["time_exact"] = ""
-
-        if mode == "NOW":
-            # 現在 → 直接下一步（房名）
+        if mode == "PERIOD":
+            data["time_period"] = text  # 早/中/晚/半夜
             upsert_state(user_id, "OPEN_ROOM", data)
             reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
             return
-
-        if mode == "RESERVE":
-            # 預約 → 讓玩家自由輸入時間文字（上午7點/晚上7點/19:00）
-            upsert_state(user_id, "OPEN_TIME_RESERVE", data)
-            reply_custom(event.reply_token, "請輸入預約時間（例如：上午7點 / 晚上7點 / 19:00）：", skip_qr())
+        if mode == "NOW":
+            upsert_state(user_id, "OPEN_ROOM", data)
+            reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
             return
-
-    
-    if state == "OPEN_TIME_RESERVE":
-        if text == "略過":
-            clear_state(user_id)
-            reply_main(event.reply_token, user_id, "⚠️ 預約時間不可略過，請重新開桌。")
+        if mode == "EXACT":
+            upsert_state(user_id, "OPEN_TIME_EXACT", data)
+            reply_custom(event.reply_token, "請輸入精確時間（HH:MM，例如 21:30）：", skip_qr())
             return
-        # 允許自由文字，直接存到 time_exact
-        data["time_exact"] = text.strip()
-        upsert_state(user_id, "OPEN_ROOM", data)
-        reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
-        return
 
     if state == "OPEN_TIME_EXACT":
         if text == "略過":
@@ -2179,11 +2211,6 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, f"✅ {label} 設定完成", shop_backend_qr())
         return
 
-    if state == "REMOVE_ADMIN":
-        if not is_shop_admin(user_id):
-            clear_state(user_id)
-            reply_sub(event.reply_token, "您不是店家管理員。")
-            return
         target_id = text.strip()
         if not target_id:
             reply_custom(event.reply_token, "請貼上要移除的 userId：", shop_backend_qr())
@@ -2193,10 +2220,6 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "✅ 已移除管理員" if ok else "⚠️ 無法移除（可能是 owner）", shop_backend_qr())
         return
 
-    if state == "REDEEM_ADMIN_CODE":
-        if not text.isdigit() or len(text) != 6:
-            reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
-            return
         ok, msg = redeem_invite_code(text, user_id)
         clear_state(user_id)
         reply_custom(event.reply_token, msg, shop_backend_qr())
@@ -2283,12 +2306,12 @@ def on_text(event: MessageEvent):
 
     if text == "修改暱稱":
         upsert_state(user_id, "EDIT_NICKNAME", {})
-        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_qr())
+        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", return_only_qr())
         return
 
     if text == "修改手機":
         upsert_state(user_id, "EDIT_PHONE", {})
-        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_qr())
+        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", return_only_qr())
         return
 
     if text == "聯絡店家":
@@ -2361,16 +2384,21 @@ def on_text(event: MessageEvent):
     if text == "新增管理員":
         generate_admin_code(event.reply_token, user_id)
         return
-    if text == "輸入6位碼":
-        if not is_shop_admin(user_id):
-            reply_sub(event.reply_token, "您不是店家管理員。")
-            return
         upsert_state(user_id, "REDEEM_ADMIN_CODE", {})
         reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
         return
     if text == "管理員名單":
         handle_admin_list(event.reply_token, user_id)
         return
+    if text.startswith("移除管理員 "):
+        if not is_shop_admin(user_id):
+            reply_sub(event.reply_token, "您不是店家管理員。")
+            return
+        target_id = text.replace("移除管理員", "").strip()
+        ok = remove_shop_admin(target_id)
+        reply_custom(event.reply_token, "✅ 已移除管理員" if ok else "⚠️ 無法移除（可能是 owner 或不存在）", shop_backend_qr())
+        return
+
     if text == "移除管理員":
         prompt_remove_admin(event.reply_token, user_id)
         return
