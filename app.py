@@ -49,7 +49,7 @@ CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "").strip()
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
 LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
 BASE_URL = os.getenv("BASE_URL", "https://mahjong-line-bot.onrender.com").strip().rstrip("/")
-OWNER_USER_ID = os.getenv("OWNER_USER_ID", "").strip()
+OWNER_USER_ID = os.getenv("Ua5794a5932d2427fcaa42ee039a2067a", "").strip()
 
 TABLE_SIZE = 4
 CREDIT_FREEZE_THRESHOLD = 60
@@ -2392,3 +2392,4 @@ init_db()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+
