@@ -1022,12 +1022,7 @@ def on_message(event):
         state_set(uid, "CUST_QUERY", {})
         reply(event.reply_token, "🧾 請輸入「暱稱關鍵字」或「手機末三碼」", qr_buttons([QuickReplyButton(MessageAction("取消", "取消"))]))
         return
-    # ====== DEFAULT FALLBACK（一定要有）======
-    line_bot_api.reply_message(
-        event.reply_token,
-        main_menu_message()
-    )
-
+    
     # Default: show main menu
     reply(event.reply_token, "請使用下方選單操作", menu_main(owner))
 
@@ -1307,6 +1302,7 @@ def home():
 if __name__ == "__main__":
     # Render uses gunicorn; local run:
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+
 
 
 
