@@ -43,8 +43,8 @@ from linebot.models import (
 # ----------------------------
 # Config
 # ----------------------------
-CHANNEL_ACCESS_TOKEN = (os.getenv("LINE_CHANNEL_ACCESS_TOKEN") or os.getenv("CHANNEL_ACCESS_TOKEN", "")).strip()
-CHANNEL_SECRET = (os.getenv("LINE_CHANNEL_SECRET") or os.getenv("CHANNEL_SECRET", "")).strip()
+CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "").strip()
+CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "").strip()
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
 LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
@@ -94,10 +94,6 @@ AUTO_CONFIRM_TIMEOUT_REASON = "確認逾時未點選"
 app = Flask(__name__)
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
-
-# ---- sanity check: avoid silent no-response when env vars missing ----
-if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
-    print("⚠️ [CONFIG] Missing LINE channel credentials. Check Render env vars: LINE_CHANNEL_ACCESS_TOKEN / LINE_CHANNEL_SECRET (or CHANNEL_ACCESS_TOKEN / CHANNEL_SECRET).")
 
 # ----------------------------
 # Time helpers
@@ -589,10 +585,7 @@ def is_frozen(user_id: str) -> bool:
     return int(u["frozen"] or 0) == 1
 
 def reply_main(reply_token: str, user_id: str, text: str):
-    try:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=main_menu_qr(user_id)))
-    except Exception as e:
-        print("⚠️ [reply_main] reply error:", e)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=main_menu_qr(user_id)))
 
 def ensure_shop_open_or_message(reply_token: str, user_id: str) -> bool:
     if shop_is_open():
@@ -1331,6 +1324,13 @@ def my_qr():
         MessageAction(label="主選單", text="主選單"),
     ])
 
+
+# 只用於『修改暱稱/手機』輸入狀態：下方只顯示返回主選單
+def my_edit_qr():
+    return QuickReply(items=[
+        QuickReplyButton(action=MessageAction(label='↩️ 返回', text='主選單'))
+    ])
+
 def shop_backend_qr():
     return qr([
         MessageAction(label="店名設定", text="店名設定"),
@@ -1368,29 +1368,21 @@ def active_block_qr():
     ])
 
 def reply_sub(reply_token: str, text: str):
-    try:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=sub_menu_qr()))
-    except Exception as e:
-        print("⚠️ [reply_sub] reply error:", e)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=sub_menu_qr()))
 
 def reply_custom(reply_token: str, text: str, quick_reply_obj):
-    try:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
-    except Exception as e:
-        print("⚠️ [reply_custom] reply error:", e)
+    line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
 
 # ✅ 移除 Flex 卡片：只回文字+按鍵
-def reply_menu(reply_token, owner=False):
-    """Always reply with main menu (QuickReply buttons)."""
-    try:
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text='請用下方按鍵操作：', quick_reply=menu_main(owner))
-        )
-    except Exception:
-        # reply_token may be invalid/used; ignore
-        pass
+def reply_menu(reply_token: str, user_id: str):
+    line_bot_api.reply_message(
+        reply_token,
+        TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
+    )
 
+# ----------------------------
+# Shop backend / customer info
+# ----------------------------
 def handle_shop_backend(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
         reply_sub(reply_token, "您不是店家管理員。")
@@ -1956,11 +1948,7 @@ def api_giveup():
 # ----------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def on_text(event: MessageEvent):
-    try:
-        process_expired_confirmations()
-    except Exception as e:
-        print("⚠️ [process_expired_confirmations] error:", e)
-
+    process_expired_confirmations()
 
     user_id = event.source.user_id
     text = (event.message.text or "").strip()
@@ -2002,20 +1990,20 @@ def on_text(event: MessageEvent):
     # ---- state machine
     if state == "EDIT_NICKNAME":
         if len(text) < 1 or len(text) > 20:
-            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", my_qr())
+            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", my_edit_qr())
             return
         set_user_nickname_manual(user_id, text)
         clear_state(user_id)
-        reply_custom(event.reply_token, "✅ 暱稱更新完成", my_qr())
+        reply_main(event.reply_token, user_id, "✅ 暱稱更新完成")
         return
 
     if state == "EDIT_PHONE":
         if PHONE_RE.match(text):
             set_user_phone(user_id, text)
             clear_state(user_id)
-            reply_custom(event.reply_token, "✅ 手機更新完成", my_qr())
+            reply_main(event.reply_token, user_id, "✅ 手機更新完成")
             return
-        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", my_qr())
+        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", my_edit_qr())
         return
 
     if state == "SET_SHOP_NAME":
@@ -2295,12 +2283,12 @@ def on_text(event: MessageEvent):
 
     if text == "修改暱稱":
         upsert_state(user_id, "EDIT_NICKNAME", {})
-        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_qr())
+        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_edit_qr())
         return
 
     if text == "修改手機":
         upsert_state(user_id, "EDIT_PHONE", {})
-        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_qr())
+        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_edit_qr())
         return
 
     if text == "聯絡店家":
