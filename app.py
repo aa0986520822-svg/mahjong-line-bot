@@ -22,9 +22,9 @@ from linebot.models import (
 # =========================
 CHANNEL_ACCESS_TOKEN = (os.getenv("CHANNEL_ACCESS_TOKEN") or "").strip()
 CHANNEL_SECRET = (os.getenv("CHANNEL_SECRET") or "").strip()
-LIFF_ID = (os.getenv("LIFF_ID") or "").strip()
-BASE_URL = (os.getenv("BASE_URL") or "").strip().rstrip("/")
-OWNER_USER_ID = (os.getenv("OWNER_USER_ID") or "").strip()
+LIFF_ID = (os.getenv("2009050373-HHA8grO4") or "").strip()
+BASE_URL = (os.getenv("https://mahjong-line-bot.onrender.com") or "").strip().rstrip("/")
+OWNER_USER_ID = (os.getenv("Ua5794a5932d2427fcaa42ee039a2067a") or "").strip()
 
 DB_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
 TZ = ZoneInfo("Asia/Taipei")
@@ -1302,3 +1302,4 @@ def home():
 if __name__ == "__main__":
     # Render uses gunicorn; local run:
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+
