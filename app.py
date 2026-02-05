@@ -332,7 +332,7 @@ def menu_main(is_owner=False):
     return qr_buttons(items)
 
 def reply(token, text, quick_reply=None):
-    line_bot_api.reply_message(token, TextSendMessage(text=OK, quick_reply=quick_reply))
+    line_bot_api.reply_message(token, TextSendMessage(text=text, quick_reply=quick_reply))
 
 def push(uid, text, quick_reply=None):
     line_bot_api.push_message(uid, TextSendMessage(text=text, quick_reply=quick_reply))
@@ -1302,6 +1302,7 @@ def home():
 if __name__ == "__main__":
     # Render uses gunicorn; local run:
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")))
+
 
 
 
