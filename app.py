@@ -1380,18 +1380,17 @@ def reply_custom(reply_token: str, text: str, quick_reply_obj):
         print("⚠️ [reply_custom] reply error:", e)
 
 # ✅ 移除 Flex 卡片：只回文字+按鍵
-def reply_menu(reply_token: str, user_id: str):
+def reply_menu(reply_token, owner=False):
+    """Always reply with main menu (QuickReply buttons)."""
     try:
         line_bot_api.reply_message(
-    except Exception as e:
-        print("⚠️ [reply_menu] reply error:", e)
-        reply_token,
-        TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
-    )
+            reply_token,
+            TextSendMessage(text='請用下方按鍵操作：', quick_reply=menu_main(owner))
+        )
+    except Exception:
+        # reply_token may be invalid/used; ignore
+        pass
 
-# ----------------------------
-# Shop backend / customer info
-# ----------------------------
 def handle_shop_backend(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
         reply_sub(reply_token, "您不是店家管理員。")
@@ -2319,11 +2318,6 @@ def on_text(event: MessageEvent):
         return
 
     if text == "開桌":
-            # 房名第一步
-            set_state(uid, "OPEN_ROOM_NAME")
-            reply(event.reply_token, "請輸入房名（可略過）")
-            return
-
         if not ensure_shop_open_or_message(event.reply_token, user_id):
             return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
@@ -2417,14 +2411,3 @@ init_db()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
-        if step == "OPEN_ROOM_NAME":
-            data = data or {}
-            data["room_name"] = text if text != "略過" else ""
-            set_state(uid, "OPEN_TIME", data)
-            reply(event.reply_token, "請選擇時間", QuickReply(items=[
-                QuickReplyButton(action=MessageAction(label="現在", text="現在")),
-                QuickReplyButton(action=MessageAction(label="預約", text="預約")),
-                QuickReplyButton(action=MessageAction(label="主選單", text="主選單")),
-            ]))
-            return
-
