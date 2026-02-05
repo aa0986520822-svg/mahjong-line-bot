@@ -1,9 +1,13 @@
 # app.py
 # Mahjong Table System (Python/Flask + LINE OA + LIFF) - Render deploy-ready
 # ===================================================
-# ✅ 新增：
-# 1) confirming 階段 30 秒未按「加入確認/放棄」=> 自動視為放棄 + 扣分 -5（僅此情況自動扣）
-# 2) 店家後台可改店名（店名設定）
+# ✅ 本版重點：
+# 1) 開桌可設定：房名 + 時間（現在/早中晚半夜/精確時間）
+# 2) 配桌進隱藏池（match_pool），不顯示在 LIFF
+# 3) 自動匹配條件：只有「開桌時間=現在」且「開桌備註=空」才匹配配桌池
+#    匹配項：金額/手速/將數/缺口人數（手速允許不限）
+# 4) 移除 Flex 白色卡片：主選單只回文字+QuickReply
+# 5) 保留：四人確認、30秒未點選=視為放棄+自動扣分-5（僅此情況自動扣）
 #
 # Render -> Environment 需設定：
 #   CHANNEL_ACCESS_TOKEN
@@ -31,7 +35,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage,
-    TextSendMessage, FlexSendMessage,
+    TextSendMessage,
     QuickReply, QuickReplyButton,
     MessageAction, URIAction,
 )
@@ -55,7 +59,19 @@ MATCH_PARTY_SIZES = ["我1人", "我2人", "我3人"]
 MATCH_AMOUNTS = ["50/20", "100/20", "100/50", "200/50"]
 MATCH_ROUNDS = ["2將", "3將"]
 
+# 開桌時間選項
+TIME_MODE_OPTIONS = ["現在", "早", "中", "晚", "半夜", "精確時間"]
+TIME_MODE_MAP = {
+    "現在": "NOW",
+    "早": "PERIOD",
+    "中": "PERIOD",
+    "晚": "PERIOD",
+    "半夜": "PERIOD",
+    "精確時間": "EXACT",
+}
+
 PHONE_RE = re.compile(r"^09\d{8}$")
+TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")  # HH:MM
 
 ADMIN_MAX_COUNT = 5
 ADMIN_CODE_EXPIRE_MIN = 10
@@ -70,7 +86,7 @@ DEDUCTION_OPTIONS = [
     ("玩家檢舉", -15),
 ]
 
-# ✅ confirming 逾時秒數（你要 30 秒）
+# confirming 逾時秒數
 CONFIRM_TIMEOUT_SEC = 30
 AUTO_CONFIRM_TIMEOUT_DEDUCT = -5
 AUTO_CONFIRM_TIMEOUT_REASON = "確認逾時未點選"
@@ -119,10 +135,10 @@ def init_db():
         user_id TEXT PRIMARY KEY,
         nickname TEXT,
         phone TEXT,
-        role TEXT DEFAULT 'customer',      -- customer / shop_admin / shop_owner
+        role TEXT DEFAULT 'customer',
         credit INTEGER DEFAULT 100,
         frozen INTEGER DEFAULT 0,
-        manual_nickname INTEGER DEFAULT 0, -- 1: 手動暱稱（不再被 LINE displayName 覆蓋）
+        manual_nickname INTEGER DEFAULT 0,
         created_at TEXT
     )
     """)
@@ -175,19 +191,24 @@ def init_db():
     )
     """)
 
+    # match_requests: 只放「開桌」(公開桌) + confirming/fill 狀態
     cur.execute("""
     CREATE TABLE IF NOT EXISTS match_requests (
         req_id INTEGER PRIMARY KEY AUTOINCREMENT,
         month_key TEXT,
         table_no INTEGER,
         creator_user_id TEXT,
-        req_type TEXT,                   -- open / match
+        req_type TEXT,                   -- open
         speed TEXT,
         amount TEXT,
         rounds TEXT,
         remark TEXT,
+        room_name TEXT,                  -- ✅ 房名
+        time_mode TEXT,                  -- ✅ NOW / PERIOD / EXACT
+        time_period TEXT,                -- ✅ 早/中/晚/半夜
+        time_exact TEXT,                 -- ✅ HH:MM
         status TEXT DEFAULT 'waiting',   -- waiting / confirming / filled / cancelled
-        confirm_started_at TEXT,         -- ✅ confirming 開始時間（用來做 30 秒逾時踢人）
+        confirm_started_at TEXT,
         created_at TEXT
     )
     """)
@@ -200,6 +221,19 @@ def init_db():
         confirmed INTEGER DEFAULT 0,
         joined_at TEXT,
         PRIMARY KEY (req_id, user_id)
+    )
+    """)
+
+    # ✅ 配桌隱藏池
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS match_pool (
+        pool_id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id TEXT,
+        speed TEXT,
+        amount TEXT,
+        rounds TEXT,
+        party_size INTEGER,
+        created_at TEXT
     )
     """)
 
@@ -226,7 +260,11 @@ def init_db():
 
     conn.commit()
 
-    # 避免舊 DB 沒有 confirm_started_at 欄位
+    # 舊 DB 遷移欄位（盡量不爆）
+    _try_alter(cur, "ALTER TABLE match_requests ADD COLUMN room_name TEXT")
+    _try_alter(cur, "ALTER TABLE match_requests ADD COLUMN time_mode TEXT")
+    _try_alter(cur, "ALTER TABLE match_requests ADD COLUMN time_period TEXT")
+    _try_alter(cur, "ALTER TABLE match_requests ADD COLUMN time_exact TEXT")
     _try_alter(cur, "ALTER TABLE match_requests ADD COLUMN confirm_started_at TEXT")
     conn.commit()
 
@@ -273,6 +311,13 @@ def get_user(user_id: str):
     row = cur.fetchone()
     conn.close()
     return row
+
+def set_user_role(user_id: str, role: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE users SET role=? WHERE user_id=?", (role, user_id))
+    conn.commit()
+    conn.close()
 
 def ensure_owner(user_id: str):
     shop = get_shop()
@@ -321,13 +366,6 @@ def set_user_nickname_manual(user_id: str, nickname: str):
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("UPDATE users SET nickname=?, manual_nickname=1 WHERE user_id=?", (nickname, user_id))
-    conn.commit()
-    conn.close()
-
-def set_user_role(user_id: str, role: str):
-    conn = db_conn()
-    cur = conn.cursor()
-    cur.execute("UPDATE users SET role=? WHERE user_id=?", (role, user_id))
     conn.commit()
     conn.close()
 
@@ -649,14 +687,50 @@ def reset_confirmations(req_id: int):
 def display_table_no(req_row) -> str:
     return f"{req_row['month_key']}-{int(req_row['table_no'])}"
 
-def create_request(creator_user_id: str, req_type: str, speed: str, party_size: int, amount: str, rounds: str, remark: str):
+def display_time(req_row) -> str:
+    mode = (req_row["time_mode"] or "").strip()
+    if mode == "NOW":
+        return "現在"
+    if mode == "PERIOD":
+        p = (req_row["time_period"] or "").strip()
+        return p if p else "時段"
+    if mode == "EXACT":
+        t = (req_row["time_exact"] or "").strip()
+        return f"{t}" if t else "時間"
+    return "-"
+
+def create_open_request(
+    creator_user_id: str,
+    speed: str,
+    party_size: int,
+    amount: str,
+    rounds: str,
+    room_name: str,
+    time_mode: str,
+    time_period: str,
+    time_exact: str,
+    remark: str
+):
     mk, table_no = allocate_table_no()
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("""
-    INSERT INTO match_requests (month_key, table_no, creator_user_id, req_type, speed, amount, rounds, remark, status, confirm_started_at, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, ?)
-    """, (mk, int(table_no), creator_user_id, req_type, speed, amount, rounds, remark or "", iso_now()))
+    INSERT INTO match_requests (
+        month_key, table_no, creator_user_id, req_type,
+        speed, amount, rounds, remark,
+        room_name, time_mode, time_period, time_exact,
+        status, confirm_started_at, created_at
+    )
+    VALUES (?, ?, ?, 'open', ?, ?, ?, ?, ?, ?, ?, ?, 'waiting', NULL, ?)
+    """, (
+        mk, int(table_no), creator_user_id,
+        speed, amount, rounds, remark or "",
+        (room_name or "").strip(),
+        (time_mode or "").strip(),
+        (time_period or "").strip(),
+        (time_exact or "").strip(),
+        iso_now()
+    ))
     req_id = cur.lastrowid
     cur.execute("""
     INSERT OR REPLACE INTO request_participants (req_id, user_id, party_size, confirmed, joined_at)
@@ -666,12 +740,12 @@ def create_request(creator_user_id: str, req_type: str, speed: str, party_size: 
     conn.close()
     return req_id
 
-def list_lobby_tables(limit: int = 200):
+def list_open_lobby_tables(limit: int = 200):
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("""
     SELECT * FROM match_requests
-    WHERE status IN ('waiting','confirming')
+    WHERE req_type='open' AND status IN ('waiting','confirming')
     ORDER BY req_id DESC
     LIMIT ?
     """, (int(limit),))
@@ -679,20 +753,47 @@ def list_lobby_tables(limit: int = 200):
     conn.close()
     return rows
 
-def find_active_request_for_user(user_id: str):
+def find_active_open_request_for_user(user_id: str):
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("""
     SELECT mr.*
     FROM request_participants rp
     JOIN match_requests mr ON mr.req_id = rp.req_id
-    WHERE rp.user_id = ? AND mr.status IN ('waiting','confirming')
+    WHERE rp.user_id = ? AND mr.req_type='open' AND mr.status IN ('waiting','confirming')
     ORDER BY mr.req_id DESC
     LIMIT 1
     """, (user_id,))
     row = cur.fetchone()
     conn.close()
     return row
+
+def user_in_pool(user_id: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM match_pool WHERE user_id=? ORDER BY pool_id DESC LIMIT 1", (user_id,))
+    row = cur.fetchone()
+    conn.close()
+    return row
+
+def remove_pool(user_id: str):
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM match_pool WHERE user_id=?", (user_id,))
+    conn.commit()
+    conn.close()
+
+def add_to_pool(user_id: str, speed: str, amount: str, rounds: str, party_size: int):
+    # 先清掉舊的（避免一個人重複入池）
+    remove_pool(user_id)
+    conn = db_conn()
+    cur = conn.cursor()
+    cur.execute("""
+    INSERT INTO match_pool (user_id, speed, amount, rounds, party_size, created_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, speed, amount, rounds, int(party_size), iso_now()))
+    conn.commit()
+    conn.close()
 
 def give_up(req_id: int, user_id: str) -> (bool, str):
     req = get_request(req_id)
@@ -714,11 +815,17 @@ def give_up(req_id: int, user_id: str) -> (bool, str):
     reset_confirmations(req_id)
     return True, "已放棄，其他人繼續等待中。"
 
-def cancel_for_user(user_id: str) -> (bool, str):
-    req = find_active_request_for_user(user_id)
-    if not req:
-        return False, "你目前沒有進行中的桌。"
-    return give_up(int(req["req_id"]), user_id)
+def cancel_all_for_user(user_id: str) -> (bool, str):
+    # 取消開桌/等待中的桌（若在桌內）
+    active = find_active_open_request_for_user(user_id)
+    if active:
+        ok, msg = give_up(int(active["req_id"]), user_id)
+        return True, f"已退出桌（{msg}）"
+    # 取消配桌池
+    if user_in_pool(user_id):
+        remove_pool(user_id)
+        return True, "已取消配桌（退出隱藏等待池）"
+    return False, "你目前沒有進行中的開桌/配桌。"
 
 def apply_deduction(target_user_id: str, delta: int, reason: str, by_user_id: str) -> (bool, str):
     u = get_user(target_user_id)
@@ -743,7 +850,7 @@ def apply_deduction(target_user_id: str, delta: int, reason: str, by_user_id: st
 
     return True, f"✅ 已扣分：{reason}（{delta}）\n目前信用分：{new_credit}\n狀態：{'凍結' if frozen==1 else '正常'}"
 
-# ✅ 逾時處理：confirming 超過 30 秒，未確認者視為放棄 + 自動扣分 -5
+# ✅ confirming 逾時處理：30 秒未點選 => 視為放棄 + 扣 -5
 def process_expired_confirmations():
     try:
         conn = db_conn()
@@ -769,38 +876,31 @@ def process_expired_confirmations():
             return
 
         for req_id in expired_req_ids:
-            # 找未確認者
             cur.execute("SELECT user_id FROM request_participants WHERE req_id=? AND confirmed=0", (req_id,))
             unconfirmed = [x["user_id"] for x in cur.fetchall()]
 
-            # 把未確認者踢出
             for uid in unconfirmed:
                 cur.execute("DELETE FROM request_participants WHERE req_id=? AND user_id=?", (req_id, uid))
-                # 自動扣分 -5（只針對逾時未點選）
                 try:
                     apply_deduction(uid, AUTO_CONFIRM_TIMEOUT_DEDUCT, AUTO_CONFIRM_TIMEOUT_REASON, by_user_id="SYSTEM")
                 except Exception:
                     pass
-                # 推播通知本人（可省略，但留著比較清楚）
                 try:
                     line_bot_api.push_message(uid, TextSendMessage(text="⚠️ 你在確認階段超過30秒未點選，已視為放棄並扣分 -5"))
                 except Exception:
                     pass
 
-            # 檢查剩餘人數
             cur.execute("SELECT COUNT(*) AS c FROM request_participants WHERE req_id=?", (req_id,))
             remaining = int(cur.fetchone()["c"])
             if remaining <= 0:
                 cur.execute("UPDATE match_requests SET status='cancelled', confirm_started_at=NULL WHERE req_id=?", (req_id,))
             else:
-                # 回到 waiting，其他人繼續等待池，確認重置
                 cur.execute("UPDATE match_requests SET status='waiting', confirm_started_at=NULL WHERE req_id=?", (req_id,))
                 cur.execute("UPDATE request_participants SET confirmed=0 WHERE req_id=?", (req_id,))
 
         conn.commit()
         conn.close()
     except Exception:
-        # 任何錯誤都不讓 webhook 爆掉
         return
 
 def push_confirm_to_participants(req_id: int):
@@ -810,10 +910,11 @@ def push_confirm_to_participants(req_id: int):
     participants = list_participants(req_id)
     if not participants:
         return
-
     confirm_uri = f"https://liff.line.me/{LIFF_ID}?view=confirm&req_id={req_id}"
+    room = (req["room_name"] or "").strip()
+    room_txt = f"｜房名 {room}" if room else ""
     msg = (
-        f"✅ 人數已滿（桌號 {display_table_no(req)}）\n"
+        f"✅ 人數已滿（桌號 {display_table_no(req)}{room_txt}）\n"
         f"請在 30 秒內完成確認：加入確認 / 放棄\n"
         f"（所有人都確認後才算成桌）\n\n"
         f"👉 確認連結：{confirm_uri}"
@@ -835,11 +936,15 @@ def push_filled_info(req_id: int):
 
     shop_name = (shop["name"] or "店家") if shop else "店家"
     group_link = (shop["group_link"] or "").strip() if shop else ""
+    room = (req["room_name"] or "").strip()
+    room_line = f"🏷️ 房名：{room}\n" if room else ""
 
     msg = (
         f"🎉 成桌成功\n"
         f"🏪 店家：{shop_name}\n"
         f"🪑 桌號：{display_table_no(req)}\n"
+        f"{room_line}"
+        f"⏰ 時間：{display_time(req)}\n"
         f"💰 金額：{req['amount'] or '-'}\n"
         f"⚡ 手速：{req['speed'] or '-'}\n"
         f"🀄 將數：{req['rounds'] or '-'}\n\n"
@@ -847,31 +952,20 @@ def push_filled_info(req_id: int):
         f"⏱️ 請於 20 分鐘內到店家\n"
         f"💬 進群後 3 分鐘內回報桌號"
     )
-    flex = {
-        "type": "bubble",
-        "header": {"type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "text": "🎉 成桌成功", "weight": "bold", "size": "lg"},
-            {"type": "text", "text": f"桌號 {display_table_no(req)}", "size": "sm", "color": "#666666"}
-        ]},
-        "body": {"type": "box", "layout": "vertical", "spacing": "sm", "contents": [
-            {"type": "text", "text": f"🏪 店家：{shop_name}", "wrap": True},
-            {"type": "text", "text": f"💰 金額：{req['amount'] or '-'}", "wrap": True},
-            {"type": "text", "text": f"⚡ 手速：{req['speed'] or '-'}｜🀄 {req['rounds'] or '-'}", "wrap": True},
-            {"type": "text", "text": f"🔗 群組：{group_link if group_link else '尚未設定'}", "wrap": True, "size": "sm", "color": "#666666"},
-            {"type": "text", "text": "⏱️ 20分鐘內到店家\n💬 3分鐘內群組回報桌號", "wrap": True, "size": "sm", "color": "#666666"}
-        ]}
-    }
-
     for p in participants:
         try:
-            line_bot_api.push_message(p["user_id"], FlexSendMessage(alt_text="成桌成功", contents=flex))
             line_bot_api.push_message(p["user_id"], TextSendMessage(text=msg))
         except Exception:
             pass
 
-def join_request(req_id: int, user_id: str, party_size: int) -> (bool, str, bool):
-    process_expired_confirmations()
+def set_request_status_confirming(req_id: int):
+    set_request_status(req_id, "confirming")
+    reset_confirmations(req_id)
+    set_confirm_started(req_id, iso_now())
+    push_confirm_to_participants(req_id)
 
+def join_open_request(req_id: int, user_id: str, party_size: int) -> (bool, str, bool):
+    process_expired_confirmations()
     req = get_request(req_id)
     if not req:
         return False, "找不到此桌。", False
@@ -898,24 +992,18 @@ def join_request(req_id: int, user_id: str, party_size: int) -> (bool, str, bool
 
     current2 = request_participant_sum(req_id)
     if current2 >= TABLE_SIZE:
-        set_request_status(req_id, "confirming")
-        reset_confirmations(req_id)
-        set_confirm_started(req_id, iso_now())
-        push_confirm_to_participants(req_id)
+        set_request_status_confirming(req_id)
         return True, "加入成功，已進入確認階段（30秒內需確認）。", True
-
     return True, "加入成功。", False
 
 def confirm_join(req_id: int, user_id: str) -> (bool, str, bool):
     process_expired_confirmations()
-
     req = get_request(req_id)
     if not req:
         return False, "找不到此桌。", False
     if req["status"] != "confirming":
         return False, "此桌不在確認階段（可能已逾時回到等待）。", False
 
-    # 若本人已被逾時踢出
     conn = db_conn()
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM request_participants WHERE req_id=? AND user_id=?", (int(req_id), user_id))
@@ -937,36 +1025,122 @@ def confirm_join(req_id: int, user_id: str) -> (bool, str, bool):
 
     return True, f"✅ 已確認（{confirmed_cnt}/{joined_cnt}）等待其他人確認…", False
 
-def my_latest_status_text(user_id: str) -> str:
-    process_expired_confirmations()
+# ----------------------------
+# Auto match (pool -> open table)
+# ----------------------------
+def speed_compatible(pool_speed: str, table_speed: str) -> bool:
+    pool_speed = (pool_speed or "").strip()
+    table_speed = (table_speed or "").strip()
+    if pool_speed == "不限" or table_speed == "不限":
+        return True
+    return pool_speed == table_speed
 
-    active = find_active_request_for_user(user_id)
-    if active:
-        s = active["status"]
-        tno = display_table_no(active)
-        if s == "waiting":
-            return f"等待中（桌號 {tno}）"
-        if s == "confirming":
-            return f"確認中（桌號 {tno}）"
+def is_open_table_eligible_for_auto(req_row) -> bool:
+    # 只有開桌選「現在」+ 備註空 才能自動匹配
+    if (req_row["time_mode"] or "").strip() != "NOW":
+        return False
+    if (req_row["remark"] or "").strip() != "":
+        return False
+    if req_row["status"] != "waiting":
+        return False
+    return True
+
+def auto_fill_from_pool(req_id: int):
+    """
+    嘗試用 pool 補滿指定開桌（只在 eligible 時執行）
+    """
+    req = get_request(req_id)
+    if not req or req["req_type"] != "open":
+        return
+    if not is_open_table_eligible_for_auto(req):
+        return
+
+    # 算缺口
+    current = request_participant_sum(req_id)
+    missing = max(0, TABLE_SIZE - current)
+    if missing <= 0:
+        return
+
     conn = db_conn()
     cur = conn.cursor()
+    # pool 先到先配
     cur.execute("""
-    SELECT month_key, table_no, status
-    FROM match_requests
-    WHERE creator_user_id=?
-    ORDER BY req_id DESC LIMIT 1
-    """, (user_id,))
-    row = cur.fetchone()
+    SELECT * FROM match_pool
+    ORDER BY created_at ASC, pool_id ASC
+    """)
+    pools = cur.fetchall()
+
+    for p in pools:
+        if missing <= 0:
+            break
+        # 條件比對：金額/將數/手速/缺口
+        if (p["amount"] or "").strip() != (req["amount"] or "").strip():
+            continue
+        if (p["rounds"] or "").strip() != (req["rounds"] or "").strip():
+            continue
+        if not speed_compatible(p["speed"], req["speed"]):
+            continue
+        party = int(p["party_size"] or 1)
+        if party > missing:
+            continue
+
+        # 加入桌
+        try:
+            ok, msg, to_confirm = join_open_request(int(req_id), p["user_id"], party)
+            if ok:
+                # 移除 pool
+                cur.execute("DELETE FROM match_pool WHERE pool_id=?", (int(p["pool_id"]),))
+                conn.commit()
+                missing = max(0, TABLE_SIZE - request_participant_sum(req_id))
+                # 通知玩家已自動加入
+                try:
+                    tno = display_table_no(get_request(req_id))
+                    line_bot_api.push_message(p["user_id"], TextSendMessage(text=f"✅ 已自動加入符合條件的開桌：{tno}\n（若人數滿會進入確認階段）"))
+                except Exception:
+                    pass
+        except Exception:
+            continue
+
     conn.close()
-    if not row:
-        return "無進行中"
-    status = row["status"]
-    tno = f"{row['month_key']}-{int(row['table_no'])}"
-    if status == "filled":
-        return f"已成桌（桌號 {tno}）"
-    if status == "cancelled":
-        return f"已取消（桌號 {tno}）"
-    return "無進行中"
+
+def auto_match_pool_user(user_id: str):
+    """
+    當某人進 pool 後，掃描所有 eligible 的 open 桌，找到第一個可塞進去就塞
+    """
+    pool = user_in_pool(user_id)
+    if not pool:
+        return
+
+    # 依桌建立時間（最早的優先），你也可以改成缺人最多優先
+    tables = list_open_lobby_tables(limit=200)
+    # 反轉成最早優先
+    tables = list(reversed(tables))
+
+    for t in tables:
+        if not is_open_table_eligible_for_auto(t):
+            continue
+        if (pool["amount"] or "").strip() != (t["amount"] or "").strip():
+            continue
+        if (pool["rounds"] or "").strip() != (t["rounds"] or "").strip():
+            continue
+        if not speed_compatible(pool["speed"], t["speed"]):
+            continue
+
+        req_id = int(t["req_id"])
+        missing = max(0, TABLE_SIZE - request_participant_sum(req_id))
+        party = int(pool["party_size"] or 1)
+        if party > missing:
+            continue
+
+        ok, msg, to_confirm = join_open_request(req_id, user_id, party)
+        if ok:
+            remove_pool(user_id)
+            try:
+                tno = display_table_no(get_request(req_id))
+                line_bot_api.push_message(user_id, TextSendMessage(text=f"✅ 已自動加入符合條件的開桌：{tno}\n（若人數滿會進入確認階段）"))
+            except Exception:
+                pass
+            break
 
 # ----------------------------
 # Export
@@ -1126,7 +1300,18 @@ def rounds_qr():
         MessageAction(label="主選單", text="主選單"),
     ])
 
-def remark_qr():
+def time_qr():
+    return qr([
+        MessageAction(label="現在", text="現在"),
+        MessageAction(label="早", text="早"),
+        MessageAction(label="中", text="中"),
+        MessageAction(label="晚", text="晚"),
+        MessageAction(label="半夜", text="半夜"),
+        MessageAction(label="精確時間", text="精確時間"),
+        MessageAction(label="主選單", text="主選單"),
+    ])
+
+def skip_qr():
     return qr([
         MessageAction(label="略過", text="略過"),
         MessageAction(label="主選單", text="主選單"),
@@ -1168,10 +1353,9 @@ def deduction_qr():
     actions.append(MessageAction(label="主選單", text="主選單"))
     return qr(actions)
 
-def active_block_qr(req_type: str):
-    cancel_label = "取消開桌" if req_type == "open" else "取消配桌"
+def active_block_qr():
     return qr([
-        MessageAction(label=cancel_label, text=cancel_label),
+        MessageAction(label="取消", text="取消"),
         URIAction(label="📋 查看桌況", uri=liff_lobby_url()),
         MessageAction(label="回主畫面", text="主選單"),
     ])
@@ -1182,24 +1366,11 @@ def reply_sub(reply_token: str, text: str):
 def reply_custom(reply_token: str, text: str, quick_reply_obj):
     line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
 
-def reply_flex_menu(reply_token: str, user_id: str):
-    flex = {
-        "type": "bubble",
-        "header": {"type": "box", "layout": "vertical", "contents": [
-            {"type": "text", "text": "麻將配桌系統", "weight": "bold", "size": "lg"},
-            {"type": "text", "text": "請選擇功能", "size": "sm", "color": "#666666"}
-        ]},
-        "body": {"type": "box", "layout": "vertical", "spacing": "md", "contents": [
-            {"type": "text", "text": "🎲 開桌｜🧩 配桌｜📋 桌況｜👤 我的｜☎️ 聯絡店家", "wrap": True},
-            {"type": "text", "text": "（桌況查詢會開啟 LIFF）", "wrap": True, "size": "sm", "color": "#666666"}
-        ]}
-    }
+# ✅ 移除 Flex 卡片：只回文字+按鍵
+def reply_menu(reply_token: str, user_id: str):
     line_bot_api.reply_message(
         reply_token,
-        [
-            FlexSendMessage(alt_text="主選單", contents=flex),
-            TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id)),
-        ]
+        TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
     )
 
 # ----------------------------
@@ -1219,7 +1390,7 @@ def handle_shop_backend(reply_token: str, user_id: str):
         f"- 店名\n"
         f"- 群連結 / 地圖 / 店家LINE（貼上連結即可）\n"
         f"- 營業/休息（休息會關閉開桌/配桌/桌況）\n"
-        f"- 新增管理員：產生 6 位碼（一次性 / {ADMIN_CODE_EXPIRE_MIN} 分鐘 / 上限{ADMIN_MAX_COUNT}位）"
+        f"- 新增管理員：6位碼（一次性 / {ADMIN_CODE_EXPIRE_MIN} 分鐘 / 上限{ADMIN_MAX_COUNT}位）"
     )
     reply_custom(reply_token, msg, shop_backend_qr())
 
@@ -1397,7 +1568,7 @@ LIFF_BASE_HTML = """
   }
 
   async function viewLobby(profile){
-    elTitle.textContent = "桌況（LIFF 大廳）";
+    elTitle.textContent = "桌況（只顯示開桌）";
     elContent.innerHTML = "<div class='muted'>載入桌列表…</div>";
 
     const data = await api("/api/lobby?user_id="+encodeURIComponent(profile.userId));
@@ -1407,7 +1578,7 @@ LIFF_BASE_HTML = """
       return;
     }
     if(!data.tables || data.tables.length===0){
-      elContent.innerHTML = "<div class='card'>目前沒有等待中的桌。</div>";
+      elContent.innerHTML = "<div class='card'>目前沒有等待中的開桌。</div>";
       return;
     }
 
@@ -1415,8 +1586,9 @@ LIFF_BASE_HTML = """
     data.tables.forEach(t=>{
       html += `
         <div class="card">
-          <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+          <div><b>桌號：</b>${escapeHtml(t.table_no)}${t.room_name ? "｜<b>房名：</b>"+escapeHtml(t.room_name) : ""}</div>
           <div class="row" style="margin-top:6px;">
+            <span class="badge">時間 ${escapeHtml(t.time_text)}</span>
             <span class="badge">金額 ${escapeHtml(t.amount)}</span>
             <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
             <span class="badge">手速 ${escapeHtml(t.speed)}</span>
@@ -1447,8 +1619,9 @@ LIFF_BASE_HTML = """
     const t = st.table;
     elContent.innerHTML = `
       <div class="card">
-        <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+        <div><b>桌號：</b>${escapeHtml(t.table_no)}${t.room_name ? "｜<b>房名：</b>"+escapeHtml(t.room_name) : ""}</div>
         <div class="row" style="margin-top:6px;">
+          <span class="badge">時間 ${escapeHtml(t.time_text)}</span>
           <span class="badge">金額 ${escapeHtml(t.amount)}</span>
           <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
           <span class="badge">手速 ${escapeHtml(t.speed)}</span>
@@ -1509,8 +1682,9 @@ LIFF_BASE_HTML = """
 
     elContent.innerHTML = `
       <div class="card">
-        <div><b>桌號：</b>${escapeHtml(t.table_no)}</div>
+        <div><b>桌號：</b>${escapeHtml(t.table_no)}${t.room_name ? "｜<b>房名：</b>"+escapeHtml(t.room_name) : ""}</div>
         <div class="row" style="margin-top:6px;">
+          <span class="badge">時間 ${escapeHtml(t.time_text)}</span>
           <span class="badge">金額 ${escapeHtml(t.amount)}</span>
           <span class="badge">將數 ${escapeHtml(t.rounds)}</span>
           <span class="badge">手速 ${escapeHtml(t.speed)}</span>
@@ -1644,7 +1818,7 @@ def api_lobby():
         return jsonify({"ok": False, "message": "你的帳號目前凍結，暫時無法使用桌況/加入。"}), 200
 
     tables = []
-    for r in list_lobby_tables(limit=200):
+    for r in list_open_lobby_tables(limit=200):
         current = request_participant_sum(int(r["req_id"]))
         missing = max(0, TABLE_SIZE - current)
         status = r["status"]
@@ -1652,6 +1826,8 @@ def api_lobby():
         tables.append({
             "req_id": int(r["req_id"]),
             "table_no": display_table_no(r),
+            "room_name": (r["room_name"] or "").strip(),
+            "time_text": display_time(r),
             "amount": r["amount"] or "-",
             "rounds": r["rounds"] or "-",
             "speed": r["speed"] or "-",
@@ -1689,6 +1865,8 @@ def api_table_status():
     table = {
         "req_id": int(req["req_id"]),
         "table_no": display_table_no(req),
+        "room_name": (req["room_name"] or "").strip(),
+        "time_text": display_time(req),
         "amount": req["amount"] or "-",
         "rounds": req["rounds"] or "-",
         "speed": req["speed"] or "-",
@@ -1719,7 +1897,7 @@ def api_join():
     if is_frozen(user_id):
         return jsonify({"ok": False, "message": "你的帳號目前凍結，暫時無法加入。"}), 200
 
-    ok, msg, to_confirm = join_request(int(req_id), user_id, party_size=party_size)
+    ok, msg, to_confirm = join_open_request(int(req_id), user_id, party_size=party_size)
     return jsonify({"ok": ok, "message": msg, "to_confirm": to_confirm}), 200
 
 @app.route("/api/confirm", methods=["POST"])
@@ -1763,13 +1941,12 @@ def api_giveup():
 # ----------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def on_text(event: MessageEvent):
-    # ✅ 先處理逾時確認（每次進來都掃一次）
     process_expired_confirmations()
 
     user_id = event.source.user_id
     text = (event.message.text or "").strip()
 
-    # profile（不要覆蓋手動暱稱）
+    # profile
     try:
         profile = line_bot_api.get_profile(user_id)
         display_name = profile.display_name or ""
@@ -1777,7 +1954,7 @@ def on_text(event: MessageEvent):
         display_name = ""
     get_or_create_user(user_id, display_name=display_name)
 
-    # ✅ 輸入 ID / 輸入ID => 回 userId
+    # 輸入ID => 顯示 userId
     if text.upper() == "ID" or text in ("輸入ID", "輸入Id", "輸入id"):
         reply_main(event.reply_token, user_id, f"你的 userId：\n{user_id}")
         return
@@ -1786,7 +1963,7 @@ def on_text(event: MessageEvent):
 
     if text in ("主選單", "選單"):
         clear_state(user_id)
-        reply_flex_menu(event.reply_token, user_id)
+        reply_menu(event.reply_token, user_id)
         return
 
     # 強制綁手機
@@ -1836,6 +2013,7 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "✅ 店名設定完成", shop_backend_qr())
         return
 
+    # 開桌/配桌共同：手速->人數->金額->將數
     if state == "FLOW_SPEED":
         if text not in MATCH_SPEEDS:
             reply_custom(event.reply_token, "請用按鍵選擇手速。", speed_qr())
@@ -1868,43 +2046,111 @@ def on_text(event: MessageEvent):
             reply_custom(event.reply_token, "請用按鍵選擇將數。", rounds_qr())
             return
         data["rounds"] = text
-        if data.get("req_type") == "open":
-            upsert_state(user_id, "FLOW_REMARK", data)
-            reply_custom(event.reply_token, "開桌備註（可略過）：\n直接輸入文字，或點「略過」", remark_qr())
-        else:
-            req_id = create_request(
-                user_id, "match",
-                data.get("speed", "不限"),
-                int(data.get("party_size", 1)),
-                data.get("amount", "50/20"),
-                data.get("rounds", "2將"),
-                ""
+
+        # ✅ 配桌：進隱藏池 + 立即嘗試自動匹配
+        if data.get("req_type") == "match":
+            add_to_pool(
+                user_id=user_id,
+                speed=data.get("speed", "不限"),
+                amount=data.get("amount", "50/20"),
+                rounds=data.get("rounds", "2將"),
+                party_size=int(data.get("party_size", 1)),
             )
-            req = get_request(req_id)
             clear_state(user_id)
-            reply_main(
-                event.reply_token, user_id,
-                f"✅ 配桌加入成功\n桌號：{display_table_no(req)}\n"
-                f"手速：{req['speed']}｜金額：{req['amount']}｜將數：{req['rounds']}\n\n"
-                f"桌況查詢請點「📋 桌況查詢」（LIFF）"
-            )
+            # 立刻嘗試配對
+            auto_match_pool_user(user_id)
+
+            # 若已配到桌（被移除 pool 代表成功加入桌）
+            if not user_in_pool(user_id):
+                reply_main(event.reply_token, user_id, "✅ 已找到符合的『現在開桌』，系統已幫你自動加入。\n若人數滿會進入確認階段（30秒內需確認）。")
+            else:
+                reply_main(event.reply_token, user_id, "✅ 已加入隱藏配桌等待池\n系統只會自動加入「時間=現在、且無備註」的開桌\n你可隨時按「取消」退出。")
+            return
+
+        # ✅ 開桌：接著選時間
+        upsert_state(user_id, "OPEN_TIME", data)
+        reply_custom(event.reply_token, "開桌時間：請選擇", time_qr())
         return
 
-    if state == "FLOW_REMARK":
-        remark = "" if text == "略過" else text
-        req_id = create_request(
-            user_id, "open",
-            data.get("speed", "不限"),
-            int(data.get("party_size", 1)),
-            data.get("amount", "50/20"),
-            data.get("rounds", "2將"),
-            remark
+    # 開桌：選時間
+    if state == "OPEN_TIME":
+        if text not in TIME_MODE_OPTIONS:
+            reply_custom(event.reply_token, "請用按鍵選擇時間。", time_qr())
+            return
+        mode = TIME_MODE_MAP.get(text, "")
+        data["time_mode"] = mode
+        data["time_period"] = ""
+        data["time_exact"] = ""
+        if mode == "PERIOD":
+            data["time_period"] = text  # 早/中/晚/半夜
+            upsert_state(user_id, "OPEN_ROOM", data)
+            reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
+            return
+        if mode == "NOW":
+            upsert_state(user_id, "OPEN_ROOM", data)
+            reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
+            return
+        if mode == "EXACT":
+            upsert_state(user_id, "OPEN_TIME_EXACT", data)
+            reply_custom(event.reply_token, "請輸入精確時間（HH:MM，例如 21:30）：", skip_qr())
+            return
+
+    if state == "OPEN_TIME_EXACT":
+        if text == "略過":
+            # 若略過精確時間，視為不合法，改回選單
+            clear_state(user_id)
+            reply_main(event.reply_token, user_id, "⚠️ 精確時間不可略過，請重新開桌。")
+            return
+        if not TIME_RE.match(text):
+            reply_custom(event.reply_token, "⚠️ 格式錯誤，請輸入 HH:MM（例如 21:30）：", skip_qr())
+            return
+        data["time_exact"] = text
+        upsert_state(user_id, "OPEN_ROOM", data)
+        reply_custom(event.reply_token, "請輸入房名（可略過）：", skip_qr())
+        return
+
+    # 開桌：房名
+    if state == "OPEN_ROOM":
+        room = "" if text == "略過" else text.strip()
+        if room and len(room) > 20:
+            reply_custom(event.reply_token, "房名最多 20 字，請重新輸入或略過：", skip_qr())
+            return
+        data["room_name"] = room
+
+        # 備註（可略過）
+        upsert_state(user_id, "OPEN_REMARK", data)
+        reply_custom(event.reply_token, "開桌備註（可略過）：", skip_qr())
+        return
+
+    # 開桌：備註 -> 建桌 -> (若符合 NOW+空備註) 立刻用 pool 自動補人
+    if state == "OPEN_REMARK":
+        remark = "" if text == "略過" else text.strip()
+        data["remark"] = remark
+        req_id = create_open_request(
+            creator_user_id=user_id,
+            speed=data.get("speed", "不限"),
+            party_size=int(data.get("party_size", 1)),
+            amount=data.get("amount", "50/20"),
+            rounds=data.get("rounds", "2將"),
+            room_name=data.get("room_name", ""),
+            time_mode=data.get("time_mode", "NOW"),
+            time_period=data.get("time_period", ""),
+            time_exact=data.get("time_exact", ""),
+            remark=remark,
         )
         req = get_request(req_id)
         clear_state(user_id)
+
+        # ✅ 建桌後嘗試 auto fill（只對 NOW + 空備註 生效）
+        auto_fill_from_pool(req_id)
+
+        room = (req["room_name"] or "").strip()
+        room_txt = f"｜房名：{room}" if room else ""
         reply_main(
             event.reply_token, user_id,
-            f"✅ 開桌成功\n桌號：{display_table_no(req)}\n"
+            f"✅ 開桌成功\n"
+            f"桌號：{display_table_no(req)}{room_txt}\n"
+            f"時間：{display_time(req)}\n"
             f"手速：{req['speed']}｜金額：{req['amount']}｜將數：{req['rounds']}\n"
             f"備註：{remark if remark else '無'}\n\n"
             f"桌況查詢請點「📋 桌況查詢」（LIFF）"
@@ -2010,13 +2256,20 @@ def on_text(event: MessageEvent):
     # ---- menu routing
     if text == "我的":
         u = get_user(user_id)
+        active_open = find_active_open_request_for_user(user_id)
+        pool = user_in_pool(user_id)
+        status_txt = "無進行中"
+        if active_open:
+            status_txt = f"桌內（桌號 {display_table_no(active_open)}｜{active_open['status']})"
+        elif pool:
+            status_txt = "配桌等待池中（隱藏）"
         msg = (
             f"👤 我的資料\n"
             f"暱稱：{u['nickname'] or '-'}\n"
             f"手機：{u['phone'] or '-'}\n"
-            f"配桌狀態：{my_latest_status_text(user_id)}\n"
+            f"狀態：{status_txt}\n"
             f"信用分數：{int(u['credit'] or 0)}\n"
-            f"狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
+            f"帳號狀態：{'凍結' if int(u['frozen'] or 0)==1 else '正常'}"
         )
         reply_custom(event.reply_token, msg, my_qr())
         return
@@ -2050,9 +2303,9 @@ def on_text(event: MessageEvent):
             return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
             return
-        active = find_active_request_for_user(user_id)
-        if active:
-            reply_custom(event.reply_token, f"你目前已有進行中的桌：{display_table_no(active)}\n請選擇：", active_block_qr(active["req_type"]))
+        # 避免重複：桌內或在pool都要擋
+        if find_active_open_request_for_user(user_id) or user_in_pool(user_id):
+            reply_custom(event.reply_token, "你目前已有進行中的開桌/配桌，請先取消。", active_block_qr())
             return
         upsert_state(user_id, "FLOW_SPEED", {"req_type": "open"})
         reply_custom(event.reply_token, "開桌：請選擇手速", speed_qr())
@@ -2063,16 +2316,18 @@ def on_text(event: MessageEvent):
             return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
             return
-        active = find_active_request_for_user(user_id)
-        if active:
-            reply_custom(event.reply_token, f"你目前已有進行中的桌：{display_table_no(active)}\n請選擇：", active_block_qr(active["req_type"]))
+        if find_active_open_request_for_user(user_id):
+            reply_custom(event.reply_token, "你目前已在某桌中，請先取消/退出該桌。", active_block_qr())
+            return
+        if user_in_pool(user_id):
+            reply_custom(event.reply_token, "你目前已在配桌等待池中。\n如要退出請按「取消」。", active_block_qr())
             return
         upsert_state(user_id, "FLOW_SPEED", {"req_type": "match"})
         reply_custom(event.reply_token, "配桌：請選擇手速", speed_qr())
         return
 
-    if text in ("取消開桌", "取消配桌"):
-        ok, msg = cancel_for_user(user_id)
+    if text == "取消":
+        ok, msg = cancel_all_for_user(user_id)
         reply_main(event.reply_token, user_id, f"{'✅' if ok else '⚠️'} {msg}")
         return
 
@@ -2127,7 +2382,7 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, msg, customer_info_qr())
         return
 
-    reply_flex_menu(event.reply_token, user_id)
+    reply_menu(event.reply_token, user_id)
 
 # ----------------------------
 # Boot
