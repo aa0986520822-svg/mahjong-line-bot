@@ -1331,27 +1331,19 @@ def my_qr():
         MessageAction(label="主選單", text="主選單"),
     ])
 
-
-def return_only_qr():
-    # 修改暱稱/手機時，底部只需要「返回」= 回主選單
-    return qr([
-        MessageAction(label="返回", text="主選單"),
-    ])
-
 def shop_backend_qr():
-    # 只有 owner 可以「新增管理員(6位碼)」
-    actions = [
+    return qr([
         MessageAction(label="店名設定", text="店名設定"),
         MessageAction(label="群設定", text="群設定"),
         MessageAction(label="地圖設定", text="地圖設定"),
         MessageAction(label="店家LINE設定", text="店家LINE設定"),
         MessageAction(label="營業/休息", text="營業/休息"),
         MessageAction(label="新增管理員(6位碼)", text="新增管理員"),
+        MessageAction(label="輸入6位碼", text="輸入6位碼"),
         MessageAction(label="管理員名單", text="管理員名單"),
         MessageAction(label="移除管理員", text="移除管理員"),
         MessageAction(label="主選單", text="主選單"),
-    ]
-    return qr(actions)
+    ])
 
 def customer_info_qr():
     return qr([
@@ -1364,6 +1356,7 @@ def deduction_qr():
     actions = []
     for name, delta in DEDUCTION_OPTIONS:
         actions.append(MessageAction(label=f"{name}{delta}", text=f"扣分 {name}"))
+    actions.append(MessageAction(label="返回客戶資訊", text="客戶資訊"))
     actions.append(MessageAction(label="主選單", text="主選單"))
     return qr(actions)
 
@@ -1388,18 +1381,16 @@ def reply_custom(reply_token: str, text: str, quick_reply_obj):
 
 # ✅ 移除 Flex 卡片：只回文字+按鍵
 def reply_menu(reply_token: str, user_id: str):
-    # ✅ 移除 Flex 卡片：只回文字+按鍵（並避免 reply_token 重複使用導致無回應）
     try:
         line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
-        )
     except Exception as e:
         print("⚠️ [reply_menu] reply error:", e)
+        reply_token,
+        TextSendMessage(text="請用下方按鍵操作：", quick_reply=main_menu_qr(user_id))
+    )
 
 # ----------------------------
 # Shop backend / customer info
-
 # ----------------------------
 def handle_shop_backend(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
@@ -1444,9 +1435,8 @@ def toggle_open(reply_token: str, user_id: str):
     reply_custom(reply_token, f"已切換為：{'營業' if new_status==1 else '休息'}", shop_backend_qr())
 
 def generate_admin_code(reply_token: str, user_id: str):
-    # 只有 OWNER_USER_ID（老闆綁定ID）才能產生驗證碼
-    if not is_owner(user_id):
-        reply_sub(reply_token, "只有老闆才能產生驗證碼。")
+    if not is_shop_admin(user_id):
+        reply_sub(reply_token, "您不是店家管理員。")
         return
     ok, msg = create_invite_code(user_id)
     reply_custom(reply_token, msg, shop_backend_qr())
@@ -1459,24 +1449,15 @@ def handle_admin_list(reply_token: str, user_id: str):
     if not ids:
         reply_custom(reply_token, "目前尚無管理員。", shop_backend_qr())
         return
-    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids])
+    msg = "管理員名單（userId）：\n" + "\n".join([f"- {x}" for x in ids]) + "\n\n（移除：點「移除管理員」後貼上 userId）"
     reply_custom(reply_token, msg, shop_backend_qr())
 
 def prompt_remove_admin(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
         reply_sub(reply_token, "您不是店家管理員。")
         return
-    ids = list_shop_admin_user_ids()
-    # 不允許移除 owner
-    ids = [x for x in ids if x != OWNER_USER_ID]
-    if not ids:
-        reply_custom(reply_token, "目前沒有可移除的管理員。", shop_backend_qr())
-        return
-    actions = []
-    for i, x in enumerate(ids[:ADMIN_MAX_COUNT], start=1):
-        actions.append(MessageAction(label=f"移除{i}", text=f"移除管理員 {x}"))
-    actions.append(MessageAction(label="主選單", text="主選單"))
-    reply_custom(reply_token, "請點選要移除的管理員：", qr(actions))
+    upsert_state(user_id, "REMOVE_ADMIN", {})
+    reply_custom(reply_token, "請貼上要移除的管理員 userId：", shop_backend_qr())
 
 def handle_customer_info(reply_token: str, user_id: str):
     if not is_shop_admin(user_id):
@@ -2022,7 +2003,7 @@ def on_text(event: MessageEvent):
     # ---- state machine
     if state == "EDIT_NICKNAME":
         if len(text) < 1 or len(text) > 20:
-            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", return_only_qr())
+            reply_custom(event.reply_token, "暱稱長度需 1~20 字，請重新輸入：", my_qr())
             return
         set_user_nickname_manual(user_id, text)
         clear_state(user_id)
@@ -2035,7 +2016,7 @@ def on_text(event: MessageEvent):
             clear_state(user_id)
             reply_custom(event.reply_token, "✅ 手機更新完成", my_qr())
             return
-        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", return_only_qr())
+        reply_custom(event.reply_token, "⚠️ 手機格式不正確，請輸入 09xxxxxxxx：", my_qr())
         return
 
     if state == "SET_SHOP_NAME":
@@ -2211,6 +2192,11 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, f"✅ {label} 設定完成", shop_backend_qr())
         return
 
+    if state == "REMOVE_ADMIN":
+        if not is_shop_admin(user_id):
+            clear_state(user_id)
+            reply_sub(event.reply_token, "您不是店家管理員。")
+            return
         target_id = text.strip()
         if not target_id:
             reply_custom(event.reply_token, "請貼上要移除的 userId：", shop_backend_qr())
@@ -2220,6 +2206,10 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "✅ 已移除管理員" if ok else "⚠️ 無法移除（可能是 owner）", shop_backend_qr())
         return
 
+    if state == "REDEEM_ADMIN_CODE":
+        if not text.isdigit() or len(text) != 6:
+            reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
+            return
         ok, msg = redeem_invite_code(text, user_id)
         clear_state(user_id)
         reply_custom(event.reply_token, msg, shop_backend_qr())
@@ -2306,12 +2296,12 @@ def on_text(event: MessageEvent):
 
     if text == "修改暱稱":
         upsert_state(user_id, "EDIT_NICKNAME", {})
-        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", return_only_qr())
+        reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_qr())
         return
 
     if text == "修改手機":
         upsert_state(user_id, "EDIT_PHONE", {})
-        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", return_only_qr())
+        reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_qr())
         return
 
     if text == "聯絡店家":
@@ -2329,6 +2319,11 @@ def on_text(event: MessageEvent):
         return
 
     if text == "開桌":
+            # 房名第一步
+            set_state(uid, "OPEN_ROOM_NAME")
+            reply(event.reply_token, "請輸入房名（可略過）")
+            return
+
         if not ensure_shop_open_or_message(event.reply_token, user_id):
             return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
@@ -2384,21 +2379,16 @@ def on_text(event: MessageEvent):
     if text == "新增管理員":
         generate_admin_code(event.reply_token, user_id)
         return
+    if text == "輸入6位碼":
+        if not is_shop_admin(user_id):
+            reply_sub(event.reply_token, "您不是店家管理員。")
+            return
         upsert_state(user_id, "REDEEM_ADMIN_CODE", {})
         reply_custom(event.reply_token, "請輸入 6 位數驗證碼：", shop_backend_qr())
         return
     if text == "管理員名單":
         handle_admin_list(event.reply_token, user_id)
         return
-    if text.startswith("移除管理員 "):
-        if not is_shop_admin(user_id):
-            reply_sub(event.reply_token, "您不是店家管理員。")
-            return
-        target_id = text.replace("移除管理員", "").strip()
-        ok = remove_shop_admin(target_id)
-        reply_custom(event.reply_token, "✅ 已移除管理員" if ok else "⚠️ 無法移除（可能是 owner 或不存在）", shop_backend_qr())
-        return
-
     if text == "移除管理員":
         prompt_remove_admin(event.reply_token, user_id)
         return
@@ -2427,3 +2417,14 @@ init_db()
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port)
+        if step == "OPEN_ROOM_NAME":
+            data = data or {}
+            data["room_name"] = text if text != "略過" else ""
+            set_state(uid, "OPEN_TIME", data)
+            reply(event.reply_token, "請選擇時間", QuickReply(items=[
+                QuickReplyButton(action=MessageAction(label="現在", text="現在")),
+                QuickReplyButton(action=MessageAction(label="預約", text="預約")),
+                QuickReplyButton(action=MessageAction(label="主選單", text="主選單")),
+            ]))
+            return
+
