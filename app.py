@@ -69,6 +69,7 @@ TIME_MODE_MAP = {
 # 支援：07:00 / 19:00 / 上午7點 / 晚上7點 / 7:00 / 7點
 TIME_RE = re.compile(r"^(\d{1,2})(?::([0-5]\d))?$")  # H or H:MM
 TIME_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+PHONE_RE = re.compile(r"^09\d{8}$")  # 台灣手機 09xxxxxxxx
 
 def normalize_time_text(s: str) -> str:
     s = (s or "").strip()
