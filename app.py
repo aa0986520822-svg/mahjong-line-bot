@@ -43,8 +43,17 @@ from linebot.models import (
 # ----------------------------
 # Config
 # ----------------------------
-CHANNEL_ACCESS_TOKEN = os.getenv("CHANNEL_ACCESS_TOKEN", "").strip()
-CHANNEL_SECRET = os.getenv("CHANNEL_SECRET", "").strip()
+def _env_first(*keys: str, default: str = "") -> str:
+    """Return first non-empty env var among keys."""
+    for k in keys:
+        v = os.getenv(k, "")
+        if v and str(v).strip():
+            return str(v).strip()
+    return default
+
+# Accept multiple common env var names to avoid mismatch issues on Render
+CHANNEL_ACCESS_TOKEN = _env_first("LINE_CHANNEL_ACCESS_TOKEN", "CHANNEL_ACCESS_TOKEN", "LINE_ACCESS_TOKEN")
+CHANNEL_SECRET = _env_first("LINE_CHANNEL_SECRET", "CHANNEL_SECRET")
 
 DATABASE_PATH = os.getenv("DATABASE_PATH", "/tmp/mahjong.db")
 LIFF_ID = os.getenv("LIFF_ID", "2009050373-HHA8grO4").strip()
@@ -120,6 +129,9 @@ AUTO_CONFIRM_TIMEOUT_DEDUCT = -5
 AUTO_CONFIRM_TIMEOUT_REASON = "確認逾時未點選"
 
 app = Flask(__name__)
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    print("⚠️ Missing LINE env vars. Please set LINE_CHANNEL_ACCESS_TOKEN and LINE_CHANNEL_SECRET (or CHANNEL_ACCESS_TOKEN/CHANNEL_SECRET).")
+
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
