@@ -1395,6 +1395,21 @@ def reply_sub(reply_token: str, text: str):
 def reply_custom(reply_token: str, text: str, quick_reply_obj):
     line_bot_api.reply_message(reply_token, TextSendMessage(text=text, quick_reply=quick_reply_obj))
 
+
+# -----------------------------------------------------
+# Compatibility helpers (fix: 開桌/配桌等流程呼叫 reply/state_set 不存在)
+# -----------------------------------------------------
+def reply(reply_token: str, text: str, quick_reply_obj=None):
+    """Backward-compatible reply helper."""
+    if quick_reply_obj is not None:
+        reply_custom(reply_token, text, quick_reply_obj)
+    else:
+        line_bot_api.reply_message(reply_token, TextSendMessage(text=text))
+
+def state_set(user_id: str, state: str, data: dict):
+    """Backward-compatible state setter."""
+    upsert_state(user_id, state, data)
+
 # ✅ 移除 Flex 卡片：只回文字+按鍵
 def reply_menu(reply_token: str, user_id: str):
     line_bot_api.reply_message(
