@@ -423,6 +423,15 @@ def get_state(user_id: str):
         data = {}
     return row["state"], data
 
+
+# --- Backward-compatible wrappers (older parts of this file still call these) ---
+def state_get(user_id: str) -> dict:
+    _state, _data = get_state(user_id)
+    return _data or {}
+
+def state_clear(user_id: str) -> None:
+    clear_state(user_id)
+
 def upsert_state(user_id: str, state: str, data: dict):
     conn = db_conn()
     cur = conn.cursor()
@@ -2007,8 +2016,24 @@ def on_text(event: MessageEvent):
     process_expired_confirmations()
 
     user_id = event.source.user_id
-    uid = user_id  # alias to avoid NameError in older code paths
+    uid = user_id
     text = (event.message.text or "").strip()
+    cmd = text.replace(" ", "")
+    cmd = re.sub(r"^[^0-9A-Za-z\u4e00-\u9fff]+", "", cmd)
+    # ✅ 任何「需要輸入文字的狀態」下，若點了其他功能鍵，直接跳出該狀態（避免卡死）
+    main_cmds = {"主選單","選單","menu","開桌","配桌","桌況查詢","桌況","我的","聯絡店家","店家後台","客戶資訊","會員查詢"}
+    admin_input_states = {
+        "SET_GROUP_LINK","SET_MAP_LINK","SET_SUPPORT_LINE","SET_SHOP_NAME",
+        "ADMIN_ADD_CODE_GEN","ADMIN_REMOVE_PICK","ADMIN_SEARCH_USER","ADMIN_DEDUCT_PICK",
+        "OPEN_TIME_TEXT","EDIT_NICKNAME","EDIT_PHONE"
+    }
+    try:
+        st, _sd = get_state(user_id)
+        if st in admin_input_states and cmd in main_cmds and cmd not in {"取消","返回"}:
+            state_clear(user_id)
+    except Exception as _e:
+        pass
+
 
     # profile
     try:
@@ -2036,6 +2061,13 @@ def on_text(event: MessageEvent):
         return
 
     state, data = get_state(user_id)
+
+    # Allow switching menus even if we are waiting for shop inputs (e.g. 地圖設定/客服LINE/店名)
+    if state in ("SET_SHOP_LINK", "SET_SHOP_NAME"):
+        if text in ("店家後台", "修改店名", "營業/休息", "地圖設定", "客服LINE", "會員查詢", "手動扣分", "匯出Excel", "主選單"):
+            clear_state(user_id)
+            state, data = get_state(user_id)
+
 
     if text in ("主選單", "選單"):
         clear_state(user_id)
@@ -2377,7 +2409,7 @@ def on_text(event: MessageEvent):
         return
 
     # ---- menu routing
-    if text == "我的":
+    if cmd == "我的":
         u = get_user(user_id)
         active_open = find_active_open_request_for_user(user_id)
         pool = user_in_pool(user_id)
@@ -2397,17 +2429,17 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, msg, my_qr())
         return
 
-    if text == "修改暱稱":
+    if cmd == "修改暱稱":
         upsert_state(user_id, "EDIT_NICKNAME", {})
         reply_custom(event.reply_token, "請輸入新的暱稱（1~20字）：", my_edit_qr())
         return
 
-    if text == "修改手機":
+    if cmd == "修改手機":
         upsert_state(user_id, "EDIT_PHONE", {})
         reply_custom(event.reply_token, "請輸入新的手機號（09xxxxxxxx）：", my_edit_qr())
         return
 
-    if text == "聯絡店家":
+    if cmd == "聯絡店家":
         shop = get_shop()
         has_any = False
         if shop:
@@ -2421,7 +2453,7 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "☎️ 聯絡店家：", contact_shop_qr())
         return
 
-    if text == "開桌":
+    if cmd == "開桌":
         state_set(uid, 'OPEN_ROOMNAME', {'req_type': 'open'})
         reply(event.reply_token, '🏷️ 請輸入房名（可略過）', skip_qr())
         return
@@ -2435,7 +2467,7 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "開桌：請選擇手速", speed_qr())
         return
 
-    if text == "配桌":
+    if cmd == "配桌":
         if not ensure_shop_open_or_message(event.reply_token, user_id):
             return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
