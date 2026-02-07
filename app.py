@@ -2019,7 +2019,7 @@ def on_text(event: MessageEvent):
         print('process_expired_confirmations error:', _e)
 
     user_id = event.source.user_id
-    uid = user_id
+    user_id = user_id
     text = (event.message.text or "").strip()
     cmd = text.replace(" ", "")
     cmd = re.sub(r"^[^0-9A-Za-z\u4e00-\u9fff]+", "", cmd)
@@ -2140,34 +2140,34 @@ def on_text(event: MessageEvent):
     # ========== 開桌：房名 / 時間（順序固定：房名 -> 時間 -> 其他） ==========
     if state == 'OPEN_ROOMNAME':
         if text in ('主選單', '取消'):
-            state_clear(uid)
+            state_clear(user_id)
             reply(event.reply_token, '請選擇功能', main_menu_message(owner))
             return
-        d = state_get(uid) or {}
+        d = state_get(user_id) or {}
         # 略過房名
         if text == '略過':
             d['room_name'] = ''
         else:
             d['room_name'] = text[:30]  # 限長
-        state_set(uid, 'OPEN_TIME_MODE', d)
+        state_set(user_id, 'OPEN_TIME_MODE', d)
         reply(event.reply_token, '⏰ 請選擇時間：現在 / 預約', time_qr())
         return
 
     if state == 'OPEN_TIME_MODE':
         if text in ('主選單', '取消'):
-            state_clear(uid)
+            state_clear(user_id)
             reply(event.reply_token, '請選擇功能', main_menu_message(owner))
             return
-        d = state_get(uid) or {}
+        d = state_get(user_id) or {}
         if text == '現在':
             d['time_mode'] = 'NOW'
             d['time_exact'] = ''
-            state_set(uid, 'FLOW_SPEED', d)
+            state_set(user_id, 'FLOW_SPEED', d)
             reply(event.reply_token, '⚡ 開桌：請選擇手速', speed_qr())
             return
         if text == '預約':
             d['time_mode'] = 'EXACT'
-            state_set(uid, 'OPEN_TIME_TEXT', d)
+            state_set(user_id, 'OPEN_TIME_TEXT', d)
             reply(event.reply_token, '🕒 請輸入預約時間（例如：上午7點 / 晚上7點 / 07:00 / 19:00）', back_main_qr())
             return
         reply(event.reply_token, '請點選「現在」或「預約」', time_qr())
@@ -2175,17 +2175,17 @@ def on_text(event: MessageEvent):
 
     if state == 'OPEN_TIME_TEXT':
         if text in ('主選單', '取消'):
-            state_clear(uid)
+            state_clear(user_id)
             reply(event.reply_token, '請選擇功能', main_menu_message(owner))
             return
-        d = state_get(uid) or {}
+        d = state_get(user_id) or {}
         t = normalize_time_text(text)
         if not t:
             reply(event.reply_token, '格式不正確，請再輸入一次（例：上午7點 / 晚上7點 / 07:00 / 19:00）', back_main_qr())
             return
         d['time_mode'] = 'EXACT'
         d['time_exact'] = t
-        state_set(uid, 'FLOW_SPEED', d)
+        state_set(user_id, 'FLOW_SPEED', d)
         reply(event.reply_token, '⚡ 開桌：請選擇手速', speed_qr())
         return
     # 開桌/配桌共同：手速->人數->金額->將數
@@ -2217,38 +2217,23 @@ def on_text(event: MessageEvent):
         return
 
     if state == "FLOW_ROUNDS":
-        if text not in MATCH_ROUNDS:
-            reply_custom(event.reply_token, "請用按鍵選擇將數。", rounds_qr())
+        rounds = cmd
+        if rounds not in MATCH_ROUNDS:
+            reply(event.reply_token, "請從按鍵選擇將數", quick_rounds())
             return
-        data["rounds"] = text
+        data["rounds"] = rounds
 
-        # ✅ 配桌：進隱藏池 + 立即嘗試自動匹配
+        # 配桌：下一步備註
         if data.get("req_type") == "match":
-            add_to_pool(
-                user_id=user_id,
-                speed=data.get("speed", "不限"),
-                amount=data.get("amount", "50/20"),
-                rounds=data.get("rounds", "2將"),
-                party_size=int(data.get("party_size", 1)),
-            )
-            clear_state(user_id)
-            # 立刻嘗試配對
-            auto_match_pool_user(user_id)
-
-            # 若已配到桌（被移除 pool 代表成功加入桌）
-            if not user_in_pool(user_id):
-                reply_main(event.reply_token, user_id, "✅ 已找到符合的『現在開桌』，系統已幫你自動加入。\n若人數滿會進入確認階段（30秒內需確認）。")
-            else:
-                reply_main(event.reply_token, user_id, "✅ 已加入隱藏配桌等待池\n系統只會自動加入「時間=現在、且無備註」的開桌\n你可隨時按「取消」退出。")
+            upsert_state(user_id, "MATCH_REMARK", data)
+            reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
             return
 
-            # ✅ 開桌：時間已在前面選完，接著備註（可略過）
-            upsert_state(user_id, 'OPEN_REMARK', data)
-            reply_custom(event.reply_token, '📝 開桌：備註（可略過）', skip_qr())
-            return
+        # 開桌：下一步備註
+        upsert_state(user_id, "OPEN_REMARK", data)
+        reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
+        return
 
-    # 開桌：選時間
-    # ---- 相容舊狀態：OPEN_TIME / OPEN_TIME_EXACT（導向新版流程） ----
     if state == "OPEN_TIME":
         upsert_state(user_id, "OPEN_TIME_MODE", data)
         reply_custom(event.reply_token, "⏰ 請選擇時間：現在 / 預約", time_qr())
@@ -2475,14 +2460,13 @@ def on_text(event: MessageEvent):
             return
         # 若正在配桌等待池，先提示取消
         if user_in_pool(user_id):
-            reply_custom(event.reply_token, "你目前正在配桌等待中。
-如要改開桌請先按「取消」退出配桌，或回主選單。", active_block_qr())
+            reply_custom(event.reply_token, "你目前正在配桌等待中。\n如要改開桌請先按「取消」退出配桌，或回主選單。", active_block_qr())
             return
         # 若已有進行中的開桌（waiting/confirming），也先擋
         if find_active_open_request_for_user(user_id):
             reply_custom(event.reply_token, "你目前已有進行中的開桌，請先取消/完成該桌。", active_block_qr())
             return
-        state_set(uid, 'OPEN_ROOMNAME', {'req_type': 'open'})
+        state_set(user_id, 'OPEN_ROOMNAME', {'req_type': 'open'})
         reply(event.reply_token, '🏷️ 請輸入房名（可略過）', skip_qr())
         return
 
@@ -2501,12 +2485,12 @@ def on_text(event: MessageEvent):
         reply_custom(event.reply_token, "配桌：請選擇手速", speed_qr())
         return
 
-    if text == "取消":
+    if cmd == "取消":
         ok, msg = cancel_all_for_user(user_id)
         reply_main(event.reply_token, user_id, f"{'✅' if ok else '⚠️'} {msg}")
         return
 
-    if text == "店家後台":
+    if cmd == "店家後台":
         handle_shop_backend(event.reply_token, user_id)
         return
 
@@ -2556,3 +2540,7 @@ def on_text(event: MessageEvent):
 # Boot
 # ----------------------------
 init_db()
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port)
