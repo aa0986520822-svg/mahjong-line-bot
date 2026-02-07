@@ -1490,7 +1490,7 @@ def generate_admin_code(reply_token: str, user_id: str):
     ok, msg = create_invite_code(user_id)
     reply_custom(reply_token, msg, shop_backend_qr())
 
-def handle_admin_list(reply_token):
+def handle_admin_list(reply_token, uid=None):
     rows = db_all('SELECT user_id FROM shop_admins ORDER BY created_at DESC')
     if not rows:
         reply_custom(reply_token, '目前沒有管理員', shop_backend_qr())
@@ -2226,12 +2226,12 @@ def on_text(event: MessageEvent):
         # 配桌：下一步備註
         if data.get("req_type") == "match":
             upsert_state(user_id, "MATCH_REMARK", data)
-            reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
+            reply(event.reply_token, "📝 可輸入備註（可略過）", skip_qr())
             return
 
         # 開桌：下一步備註
         upsert_state(user_id, "OPEN_REMARK", data)
-        reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
+        reply(event.reply_token, "📝 可輸入備註（可略過）", skip_qr())
         return
 
     if state == "OPEN_TIME":
@@ -2539,8 +2539,3 @@ def on_text(event: MessageEvent):
 # ----------------------------
 # Boot
 # ----------------------------
-init_db()
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
