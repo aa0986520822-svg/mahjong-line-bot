@@ -2013,7 +2013,10 @@ def api_giveup():
 # ----------------------------
 @handler.add(MessageEvent, message=TextMessage)
 def on_text(event: MessageEvent):
-    process_expired_confirmations()
+    try:
+        process_expired_confirmations()
+    except Exception as _e:
+        print('process_expired_confirmations error:', _e)
 
     user_id = event.source.user_id
     uid = user_id
@@ -2061,6 +2064,18 @@ def on_text(event: MessageEvent):
         return
 
     state, data = get_state(user_id)
+
+    # ✅ 主選單/功能鍵可中斷任何流程狀態（避免卡在將數/金額等步驟）
+    interrupt_cmds = {"主選單","選單","menu","開桌","配桌","桌況查詢","桌況","我的","聯絡店家","店家後台","客戶資訊","客戶查詢","店名設定","群設定","地圖設定","店家LINE設定","營業/休息","新增管理員","管理員名單","移除管理員","取消"}
+    if cmd in interrupt_cmds and cmd not in {"現在","預約"}:
+        if state:
+            try:
+                state_clear(user_id)
+            except Exception:
+                pass
+            state = None
+            data = {}
+
 
     # Allow switching menus even if we are waiting for shop inputs (e.g. 地圖設定/客服LINE/店名)
     if state in ("SET_SHOP_LINK", "SET_SHOP_NAME"):
@@ -2454,17 +2469,21 @@ def on_text(event: MessageEvent):
         return
 
     if cmd == "開桌":
-        state_set(uid, 'OPEN_ROOMNAME', {'req_type': 'open'})
-        reply(event.reply_token, '🏷️ 請輸入房名（可略過）', skip_qr())
-        return
+        if not ensure_shop_open_or_message(event.reply_token, user_id):
+            return
         if not ensure_not_frozen_or_message(event.reply_token, user_id):
             return
-        # 避免重複：桌內或在pool都要擋
-        if find_active_open_request_for_user(user_id) or user_in_pool(user_id):
-            reply_custom(event.reply_token, "你目前已有進行中的開桌/配桌，請先取消。", active_block_qr())
+        # 若正在配桌等待池，先提示取消
+        if user_in_pool(user_id):
+            reply_custom(event.reply_token, "你目前正在配桌等待中。
+如要改開桌請先按「取消」退出配桌，或回主選單。", active_block_qr())
             return
-        upsert_state(user_id, "FLOW_SPEED", {"req_type": "open"})
-        reply_custom(event.reply_token, "開桌：請選擇手速", speed_qr())
+        # 若已有進行中的開桌（waiting/confirming），也先擋
+        if find_active_open_request_for_user(user_id):
+            reply_custom(event.reply_token, "你目前已有進行中的開桌，請先取消/完成該桌。", active_block_qr())
+            return
+        state_set(uid, 'OPEN_ROOMNAME', {'req_type': 'open'})
+        reply(event.reply_token, '🏷️ 請輸入房名（可略過）', skip_qr())
         return
 
     if cmd == "配桌":
@@ -2537,7 +2556,3 @@ def on_text(event: MessageEvent):
 # Boot
 # ----------------------------
 init_db()
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
