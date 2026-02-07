@@ -2007,6 +2007,7 @@ def on_text(event: MessageEvent):
     process_expired_confirmations()
 
     user_id = event.source.user_id
+    uid = user_id  # alias to avoid NameError in older code paths
     text = (event.message.text or "").strip()
 
     # profile
