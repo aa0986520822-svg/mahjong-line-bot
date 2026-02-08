@@ -789,6 +789,18 @@ def create_open_request(
     conn.close()
     return req_id
 
+def arrival_notice(req_row):
+    """依時間模式調整到店提醒"""
+    mode = (req_row.get("time_mode") or "").strip()
+    if mode == "EXACT":
+        return "⏱️ 請於成桌前 5 分鐘到店家"
+    return "⏱️ 請於 20 分鐘內到店家"
+
+def report_notice(req_row):
+    """群內回報提醒"""
+    return "💬 進群後 3 分鐘內回報桌號"
+
+
 def list_open_lobby_tables(limit: int = 200):
     conn = db_conn()
     cur = conn.cursor()
@@ -996,7 +1008,8 @@ def push_filled_info(req_id: int):
         f"⏰ 時間：{display_time(req)}\n"
         f"💰 金額：{req['amount'] or '-'}\n"
         f"⚡ 手速：{req['speed'] or '-'}\n"
-        f"🀄 將數：{req['rounds'] or '-'}\n\n"
+        f"🀄 將數：{req['rounds'] or '-'}\n"\
+        f"📝 備註：{req['remark'] or '無'}\n\n"
         f"🔗 群組連結：{group_link if group_link else '（尚未設定）'}\n\n"
         f"⏱️ 請於 20 分鐘內到店家\n"
         f"💬 進群後 3 分鐘內回報桌號"
@@ -1484,26 +1497,31 @@ def toggle_open(reply_token: str, user_id: str):
     reply_custom(reply_token, f"已切換為：{'營業' if new_status==1 else '休息'}", shop_backend_qr())
 
 def generate_admin_code(reply_token: str, user_id: str):
-    if not is_shop_admin(user_id):
-        reply_sub(reply_token, "您不是店家管理員。")
+    # 只有老闆（OWNER_USER_ID）可生成驗證碼
+    if not (OWNER_USER_ID and user_id == OWNER_USER_ID):
+        reply_sub(reply_token, "⚠️ 只有老闆可以生成驗證碼。")
         return
     ok, msg = create_invite_code(user_id)
     reply_custom(reply_token, msg, shop_backend_qr())
 
-def handle_admin_list(reply_token):
-    # Show current admin list (safe).
-    try:
-        admins = admins_get()
-    except Exception:
-        reply(reply_token, "❌ 讀取管理員名單失敗，請稍後再試。", shop_backend_qr())
-        return
+def get_admin_list_text():
+    """回傳 shop_admins 名單（顯示暱稱），若無則提示"""
+    ids = list_shop_admin_user_ids()
+    # 不把老闆本人列入管理員名單（老闆永遠有後台權限）
+    ids = [i for i in ids if i and i != OWNER_USER_ID]
 
-    if not admins:
-        reply(reply_token, "👥 目前沒有管理員。", shop_backend_qr())
-        return
+    if not ids:
+        return "尚無管理員"
 
-    msg = "👥 管理員名單：\n" + "\n".join([f"- {a[:6]}...{a[-4:]}" for a in admins])
-    reply(reply_token, msg, shop_backend_qr())
+    lines = ["目前管理員："]
+    for i in ids:
+        u = user_get(i)
+        nick = (u.get("nickname") or "").strip() if u else ""
+        if not nick:
+            nick = f"(未設定暱稱) {i[-6:]}"
+        lines.append(f"• {nick}")
+    return "\n".join(lines)
+
 
 def prompt_remove_admin(reply_token, uid):
     if not is_shop_admin(uid):
@@ -2224,7 +2242,7 @@ def on_text(event: MessageEvent):
         return
 
     if state == "FLOW_ROUNDS":
-        rounds = cmd
+        rounds = cmd or text
         if rounds not in MATCH_ROUNDS:
             reply(event.reply_token, "請從按鍵選擇將數", quick_rounds())
             return
@@ -2521,7 +2539,7 @@ def on_text(event: MessageEvent):
         generate_admin_code(event.reply_token, user_id)
         return
     if text == "管理員名單":
-        handle_admin_list(event.reply_token, user_id)
+        reply_custom(event.reply_token, get_admin_list_text(), shop_backend_qr())
         return
     if text == "移除管理員":
         prompt_remove_admin(event.reply_token, user_id)
