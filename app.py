@@ -1,3 +1,10 @@
+def quick_cancel():
+    """Compatibility helper: quick reply with only 取消/主選單 (used by older code paths)."""
+    try:
+        return back_main_qr()
+    except Exception:
+        return None
+
 # app.py
 # Mahjong Table System (Python/Flask + LINE OA + LIFF) - Render deploy-ready
 # ===================================================
@@ -2250,13 +2257,31 @@ def on_text(event: MessageEvent):
 
         # 配桌：下一步備註
         if data.get("req_type") == "match":
-            upsert_state(user_id, "MATCH_REMARK", data)
-            reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
+            # 配桌：不需要備註，選完將數直接加入配桌池
+            try:
+                add_to_pool(
+                    user_id=user_id,
+                    speed=data.get('speed','不限'),
+                    amount=data.get('amount','50/20'),
+                    rounds=data.get('rounds','2將'),
+                    party_size=int(data.get('party_size',1)),
+                )
+                clear_state(user_id)
+                reply_main(event.reply_token, user_id,
+                    f"✅ 已加入配桌池
+手速：{data.get('speed','不限')}｜人數：{data.get('party_size',1)}
+金額：{data.get('amount','50/20')}｜將數：{data.get('rounds','2將')}
+
+你可點『📋 桌況查詢』(LIFF) 查看可加入的開桌。"
+                )
+            except Exception as e:
+                print('MATCH CREATE ERROR:', e)
+                reply_custom(event.reply_token, '⚠️ 配桌加入失敗，請再試一次', main_menu_qr(is_shop_admin(user_id)))
             return
 
         # 開桌：下一步備註
         upsert_state(user_id, "OPEN_REMARK", data)
-        reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", quick_cancel())
+        reply(event.reply_token, "📝 可輸入備註（可略過，輸入 0 略過）", skip_qr())
         return
 
     if state == "OPEN_TIME":
@@ -2298,7 +2323,7 @@ def on_text(event: MessageEvent):
 
     # 開桌：備註 -> 建桌 -> (若符合 NOW+空備註) 立刻用 pool 自動補人
     if state == "OPEN_REMARK":
-        remark = "" if text == "略過" else text.strip()
+        remark = "" if text in ("略過","0") else text.strip()
         data["remark"] = remark
         req_id = create_open_request(
             creator_user_id=user_id,
@@ -2568,4 +2593,4 @@ init_db()
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0"
